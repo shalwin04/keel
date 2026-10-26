@@ -132,7 +132,7 @@ Bonus prizes in reach: **Best Build on Open-Weight Models** (screening tier on M
 3. **0:45 The catch (60s).** Keel's cycle runs. A served variant has swapped the model and shifted the shoe colour. Side-by-side card, SAM masks highlighting the changed regions, the open-weight screen score, Muse Spark's reasons.
 4. **1:45 The drift (20s).** Flip `image_background_gen` on in Ads Manager. Next cycle flags it and logs who/what/when.
 5. **2:05 The fix (40s).** Phone buzzes on WhatsApp. Tap **Make on-brand replacement** → Muse Image variant arrives → tap **Approve** → ad updated through the API → Keel re-reads and verifies.
-6. **2:45 The number (15s).** "47 variants audited in 90 seconds, 94% precision on our eval set, ₹0.0X per variant on the open-weight tier." Close on the positive pitch.
+6. **2:45 The number (15s).** "[N] variants audited in [T] seconds, [P]% precision on our eval set, [cost] per variant on the open-weight tier" — real numbers from `npm run eval`, never placeholders in the final video. Close on the positive pitch.
 
 Every frame labelled with what was built during the hackathon.
 

@@ -57,7 +57,7 @@ npm run eval                  # eval set
 
 ## Built during the hackathon
 
-Everything in this repository was written during the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026). The first commit is the empty scaffold; the commit history shows each feature as it was built. No code was carried over from earlier projects.
+Everything in this repository was written during the Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026). The first commit (Oct 27) is the initial scaffold; the commit history shows each feature as it was built. No code was carried over from earlier projects.
 
 | Date | Built |
 |---|---|
