@@ -1,0 +1,15 @@
+{
+  "name": "@keel/meta",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@keel/core": "*",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "openai": "^7.45.0",
+    "zod": "^4.6.7"
+  }
+}

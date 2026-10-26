@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.base.json",
+  "include": ["apps/*/src", "packages/*/src", "packages/db/drizzle.config.ts", "eval/*.ts"]
+}

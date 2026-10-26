@@ -1,0 +1,19 @@
+{
+  "name": "@keel/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/index.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.5",
+    "@keel/agents": "*",
+    "@keel/core": "*",
+    "@keel/db": "*",
+    "@keel/meta": "*",
+    "@langchain/langgraph": "^1.5.3",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.14"
+  }
+}
