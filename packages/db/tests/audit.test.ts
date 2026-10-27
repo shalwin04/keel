@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GENESIS, chain, verifyChain } from "./audit.ts";
+import { GENESIS, chain, verifyChain } from "../src/audit.ts";
 
 describe("hash-chained audit log", () => {
   const a = chain(GENESIS, "keel", "finding.created", { id: "f1" });

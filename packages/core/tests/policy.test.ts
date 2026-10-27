@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { decide } from "./policy.ts";
-import type { Finding } from "./schemas.ts";
+import { decide } from "../src/policy.ts";
+import type { Finding } from "../src/schemas.ts";
 
 const f = (p: Partial<Finding>): Finding => ({
   id: p.id ?? "f1",

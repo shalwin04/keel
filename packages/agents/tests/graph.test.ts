@@ -1,8 +1,8 @@
 import { Command, MemorySaver } from "@langchain/langgraph";
 import { describe, expect, it, vi } from "vitest";
 import type { AdSnapshot } from "@keel/core";
-import type { KeelDeps } from "./deps.ts";
-import { buildCycleGraph } from "./graph.ts";
+import type { KeelDeps } from "../src/deps.ts";
+import { buildCycleGraph } from "../src/graph.ts";
 
 const snap: AdSnapshot = {
   adId: "ad1",

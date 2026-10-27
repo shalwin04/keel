@@ -40,6 +40,8 @@ packages/db    Drizzle schema, hash-chained audit log
 eval/          labelled variant pairs + precision/recall runner
 ```
 
+Unit tests live in a `tests/` folder beside each package's `src/` (for example `packages/agents/tests/graph.test.ts`).
+
 ## Run locally
 
 ```bash

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { diffFeatures } from "./drift.ts";
+import { diffFeatures } from "../src/drift.ts";
 
 describe("diffFeatures", () => {
   it("flags an enhancement switched on since the baseline", () => {

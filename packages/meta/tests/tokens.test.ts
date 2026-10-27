@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decodeButtonId, encodeButtonId } from "./tokens.ts";
+import { decodeButtonId, encodeButtonId } from "../src/tokens.ts";
 
 describe("approval button tokens", () => {
   it("round-trips", () => {
