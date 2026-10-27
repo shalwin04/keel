@@ -1,37 +1,38 @@
 # Keel — Architecture
 
-Keel is a **deterministic agent spine with model judgment at the edges**. The cycle is a fixed LangGraph graph so every run is reproducible and auditable; models are called only where judgment is needed; every action that touches a live ad passes a policy gate, a human approval and a post-action verification.
+Keel is a **deterministic agent spine with model judgment at the edges**. The cycle is a fixed LangGraph graph so every run is reproducible and auditable; models are called only where judgment is needed; every action that touches a live ad passes a policy gate, a human decision in **Keel Bridge**, and a read-back from Meta.
 
 ## 1. System overview
 
 ```mermaid
 flowchart LR
   subgraph Meta["Meta platform"]
+    FBL["Facebook Login for Business"]
     MAPI["Marketing API<br/>(ads, creatives, features spec, previews)"]
     MCP["Ads MCP<br/>mcp.facebook.com/ads"]
-    WA["WhatsApp Cloud API"]
     MM["Meta Model API<br/>Muse Spark · Wonder · Image · SAM 3.1 · Voice Transcribe"]
   end
   OW["Open-weight tier<br/>Muse Spark Open / Glimmer<br/>(Baseten · Modal)"]
 
   subgraph Keel
     W["worker<br/>scheduler + LangGraph cycle"]
-    A["api (Hono)<br/>REST · webhooks · onboarding"]
-    WEB["web (Vite + React)<br/>dashboard"]
-    DB[("Postgres<br/>state · audit · checkpoints")]
-    OBJ[("Object store<br/>snapshots · masks")]
+    A["api (Hono)<br/>sessions · queue · decisions · SSE"]
+    WEB["Keel Bridge<br/>(Vite + React, installable PWA)"]
+    DB[("Postgres<br/>state · audit · checkpoints · trace")]
   end
 
+  WEB -- sign in --> FBL
+  FBL -- token --> A
   W -- read / act --> MAPI
-  W -- insights, anomaly signal --> MCP
+  W -- insights --> MCP
   W -- screen --> OW
-  W -- segment / compare / investigate / generate --> MM
-  W -- alert cards --> WA
-  WA -- button taps, voice notes --> A
-  A -- resume approval --> W
-  W & A --- DB
-  W --- OBJ
-  WEB --> A
+  W -- segment / compare / draft / generate --> MM
+  W -- trace events via NOTIFY --> DB
+  DB -- LISTEN --> A
+  A -- server-sent events --> WEB
+  W -- web push --> WEB
+  WEB -- decision --> A
+  A -- resume cycle --> DB
 ```
 
 ## 2. The watch cycle (LangGraph)
@@ -39,146 +40,156 @@ flowchart LR
 ```mermaid
 flowchart TD
   START([cycle tick per ad account]) --> ingest
-  ingest["ingest<br/>ads · creatives · features spec · variant previews"] --> drift
+  ingest["ingest<br/>ads · creatives · features spec · variants"] --> drift
   drift["detectDrift<br/>diff vs locked baseline"] --> screen
-  screen["screen (open-weight)<br/>score every variant vs original"] -->|suspicious| inspect
-  screen -->|clean| learn
-  inspect["inspect<br/>SAM 3.1 regions → Muse Spark region compare"] --> ambiguous{confidence?}
-  ambiguous -->|low| investigate["investigate<br/>Muse Wonder sub-agent with tools"]
-  ambiguous -->|high| decide
-  investigate --> decide
-  decide["decide<br/>severity policy → proposed actions"] --> gate{policy gate}
-  gate -->|log only| learn
-  gate -->|needs approval| approve["requestApproval<br/>WhatsApp card · interrupt()"]
-  approve -->|approved| act["act<br/>pause · revert · replace"]
-  approve -->|rejected / expired| learn
-  act --> verify["verify<br/>re-read state from Meta"]
-  verify --> learn["learn<br/>feedback → rulebook · audit"]
-  learn --> END([done])
+  screen["screen (open-weight)<br/>score every variant"] -->|suspicious| inspect
+  screen -->|clean| decide
+  inspect["inspect<br/>SAM 3.1 regions → Muse Spark compare"] --> investigate
+  investigate["investigate<br/>Muse Wonder on unclear findings"] --> decide
+  decide["decide<br/>fixed policy → proposals"] -->|needs a decision| notify
+  decide -->|nothing to ask| act
+  notify["notify<br/>review card + web push"] --> wait
+  wait["requestApproval<br/>interrupt() until someone decides"] --> act
+  act["act<br/>pause · revert · replace"] --> verify
+  verify["verify<br/>read the ad back from Meta"] --> learn
+  learn["learn<br/>outcomes · audit · cycle end"] --> END([done])
 ```
 
 | Node | Kind | Model | Output |
 |---|---|---|---|
-| `ingest` | deterministic | — | `AdSnapshot[]` (ad, creative, features spec, variant images) |
-| `detectDrift` | deterministic | — | `Finding[]` with code `SETTING_DRIFT` |
-| `screen` | model | Muse Spark Open / Glimmer | per-variant `screenScore` (0–1) + suspected defect codes |
-| `inspect` | model + vision | SAM 3.1 → Muse Spark | `Finding[]` with regions, evidence, confidence |
-| `investigate` | agent (tool loop) | Muse Wonder | resolves ambiguous findings using tools |
-| `decide` | deterministic policy | — | `ActionProposal[]` |
-| `requestApproval` | human | — (Voice Transcribe for voice replies) | approval / rejection via `interrupt()` |
+| `ingest` | deterministic | — | `AdSnapshot[]`; first sight of a creative locks its baseline |
+| `detectDrift` | deterministic | — | `SETTING_DRIFT` findings |
+| `screen` | model | Muse Spark Open / Glimmer | per-variant score + suspected codes |
+| `inspect` | model + vision | SAM 3.1 → Muse Spark | findings with regions, evidence, confidence |
+| `investigate` | agent (tool loop) | Muse Wonder | resolves findings with confidence 0.45–0.75 |
+| `decide` | deterministic | — | proposals, persisted with their findings |
+| `notify` | side effect | — | review card + push to owners and reviewers |
+| `requestApproval` | human | — | `interrupt()`; resumed by the decision endpoint |
 | `act` | deterministic | Muse Image (replace only) | Marketing API mutations |
-| `verify` | deterministic | — | confirmed post-state or rollback alert |
-| `learn` | deterministic + model | Muse Wonder | rulebook updates, audit entries |
+| `verify` | deterministic | — | confirms the new state, or flags a mismatch |
+| `learn` | deterministic | — | proposal outcomes, audit, cycle completed |
 
-**Why a fixed graph and not a free-roaming supervisor:** the work is a known pipeline; letting a model choose the order adds failure modes without adding capability. The one open-ended step — an ambiguous finding — gets a bounded tool-using sub-agent with a step limit.
+`notify` is its own node because LangGraph re-runs a node from the top when it resumes: side effects placed before `interrupt()` would fire twice.
 
-### Investigator tools (`investigate`)
+Every node runs inside an `AsyncLocalStorage` context carrying the cycle and node, so model clients deep in the call stack report into the live trace without threading ids through every function.
 
-`getOriginalCreative`, `getCatalogItem`, `segment(concept)`, `compareRegions`, `getRulebook`, `getAdInsights`, `getAnomalySignal` (Ads MCP), `searchPastFindings`. Max 8 steps; must end with a structured verdict.
+**Why a fixed graph:** the work is a known pipeline; letting a model choose the order adds failure modes without adding capability. The one open-ended step, an unclear finding, gets a bounded tool-using sub-agent.
 
 ## 3. Model routing
 
 | Task | Model | Why |
 |---|---|---|
-| Fast screen of every variant | **Muse Spark Open** (Baseten `meta-models/muse-spark-open-1026`) or **Muse Glimmer** (Modal) | Cheap, high-volume; qualifies for the open-weight bonus |
-| Region isolation | **SAM 3.1** (`sam-3.1`, Responses API) | Concept prompts ("person", "shoe", "price text") give comparable crops |
-| Region comparison + reasons | **Muse Spark** (`muse-spark-1.x`) | Multimodal reasoning, structured output |
+| Fast screen of every variant | **Muse Spark Open** (Baseten `meta-models/muse-spark-open-1026`) or **Muse Glimmer** (Modal) | Cheap, high volume; qualifies for the open-weight bonus |
+| Region isolation | **SAM 3.1** (`sam-3.1`, Responses API) | Concept prompts ("person", "product", "price text") give comparable regions |
+| Region comparison + reasons | **Muse Spark** | Multimodal reasoning, structured output |
 | Rulebook drafting, investigation | **Muse Wonder** (`muse-wonder-1.0`) | 1M context, strongest agentic model on the API |
 | On-brand replacement | **Muse Image** | Up to 10 reference images, accurate in-image text |
-| Voice-note approvals, voiceover audit | **Muse Voice Transcribe** (`muse-voice-transcribe-1.0`, realtime WebSocket) | 25 languages incl. Tamil and Hindi |
+| Voice commands (stretch) | **Muse Voice Transcribe** (realtime WebSocket) | Browser mic streams PCM16 directly |
 
-All text/vision models are called through OpenAI-compatible clients (`https://api.meta.ai/v1`, Bearer `META_API_KEY`). Model IDs live in config and are verified on day 1.
+All text and vision calls go through OpenAI-compatible clients (`https://api.meta.ai/v1`, Bearer `META_API_KEY`). Each call reports model, latency, tokens and cost to the trace.
 
-## 4. Data model (Postgres)
+## 4. Keel Bridge (web app)
 
-| Table | Key fields |
+| Screen | Data |
 |---|---|
-| `brands` | id, name, whatsapp_number, policy (auto-actions allowed) |
-| `ad_accounts` | id, brand_id, meta_account_id, token_ref, poll_interval_min |
-| `rulebooks` | brand_id, version, rules (JSON), source_ads, created_by |
-| `creative_baselines` | creative_id, approved_image_hash, features_spec (JSON), locked_at, locked_by |
-| `snapshots` | id, cycle_id, ad_id, creative_id, features_spec, variant refs |
-| `findings` | id, cycle_id, ad_id, variant_ref, code, severity, confidence, regions, evidence, status |
-| `proposals` | id, finding_id, action, params, requires_approval, status, expires_at |
-| `approvals` | id, proposal_id, channel, decided_by, decision, decided_at, raw (button / transcript) |
-| `audit_log` | seq, at, actor, event, payload, prev_hash, hash |
-| `eval_runs` | id, model_tier, precision, recall, cost_per_variant, created_at |
-| LangGraph checkpoints | managed by `@langchain/langgraph-checkpoint-postgres` |
+| Review | `GET /api/queue`, `POST /api/proposals/:id/decision` |
+| Live trace | `GET /api/cycles`, `GET /api/cycles/:id/trace`, SSE |
+| Accounts + lock board | `GET /api/accounts`, `GET /api/accounts/:id/ads`, `POST /api/accounts/:id/cycles` |
+| Audit log | `GET /api/audit` (chain verified server-side on every load) |
+| Connect an account | `GET /api/meta/adaccounts`, `POST /api/accounts`, `POST /api/rulebooks/draft` |
 
-The audit log is **hash-chained** (`hash = sha256(prev_hash ‖ event)`), so any tampering breaks the chain — cheap, and it makes "verifiable agent" concrete.
+**Live updates.** The worker writes each trace event to `trace_events` and publishes it with Postgres `NOTIFY`. Each API process holds one `LISTEN` connection and fans events out over server-sent events to every open browser that can see that account. The browser patches the trace in place and refreshes the queue.
 
-## 5. Actions and the approval contract
+**Alerts.** `notify` sends web push (VAPID) to owners and reviewers of the account; the service worker shows the alert and opens the review card when tapped. Expired subscriptions are deleted.
 
-| Action | Meta API effect | Approval |
-|---|---|---|
-| `LOG` | none | none |
-| `RELOCK_SETTING` | new creative with enhancement `OPT_OUT`, swap ad's creative | required unless brand policy allows auto-relock |
-| `PAUSE_AD` | `status=PAUSED` | required |
-| `REVERT_CREATIVE` | new creative from approved original, enhancements opted out, swap | required |
-| `REPLACE_CREATIVE` | Muse Image variant → new creative → swap | required twice (action, then the generated image) |
+**Demo workspace.** A seeded fictional brand (Northline) lets judges try every screen. Decisions there are simulated: recorded, audited and streamed, but no Meta call is made. `POST /api/demo/reset` restores it.
 
-Every proposal carries: target, action, reason, evidence (image refs + regions), expected spend impact, expiry (default 6 h). Approvals arrive as WhatsApp button replies carrying a signed proposal token (HMAC, single use). After `act`, `verify` re-reads the ad from Meta and confirms the new state; a mismatch raises a high-severity alert instead of retrying silently.
+## 5. Access and approvals
 
-Note: the Ad Creative Features Spec endpoint is read-only, and creatives are treated as immutable — every "change" is a new creative plus an ad update.
+| Role | Can |
+|---|---|
+| owner | everything, including pausing ads and shipping replacements |
+| reviewer | reject anything; approve log, relock and revert |
+| viewer | watch |
 
-## 6. Variant sources (pluggable)
+Rules live in `canDecide()` in `@keel/core`. A decision is accepted only if the proposal is pending, unexpired, the user's role allows it, and the cycle is still paused at `requestApproval`. The proposal is claimed atomically (`pending → deciding`) so a double click can't resume a cycle twice.
 
-```ts
-interface VariantSource {
-  listVariants(ad: AdRef): Promise<Variant[]>; // rendered images of what Meta may serve
-}
-```
+| Action | Meta API effect |
+|---|---|
+| `LOG` | none |
+| `RELOCK_SETTING` | new creative with the enhancement `OPT_OUT`, swap the ad's creative |
+| `PAUSE_AD` | `status=PAUSED`, then read back |
+| `REVERT_CREATIVE` | new creative from the approved original, enhancements opted out, swap |
+| `REPLACE_CREATIVE` | Muse Image variant → second decision on the image → new creative → swap |
 
-- `MetaPreviewSource` — Marketing API ad previews per placement.
-- `FixtureVariantSource` — local or uploaded variants (eval set, demo fallback, brand exports).
+The Ad Creative Features Spec endpoint is read-only and creatives are treated as immutable, so every change is a new creative plus an ad update.
 
-## 7. Repo layout
+## 6. Data model (Postgres)
+
+| Group | Tables |
+|---|---|
+| People and access | `users`, `workspaces`, `memberships` (role), `sessions`, `meta_connections` (token AES-GCM encrypted), `push_subscriptions` |
+| Brands | `brands`, `ad_accounts`, `rulebooks` |
+| Watch cycle | `cycles`, `snapshots`, `creative_baselines`, `findings`, `proposals`, `approvals`, `trace_events` |
+| Trust | `audit_log` (hash-chained), `eval_runs` |
+| LangGraph | checkpoint tables from `@langchain/langgraph-checkpoint-postgres`; thread id = cycle id |
+
+The audit log is **hash-chained** (`hash = sha256(prev_hash ‖ actor, event, payload)`), verified on every audit page load.
+
+## 7. Variant sources (pluggable)
+
+- `MetaPreviewSource`: Marketing API ad previews per placement (HTML; rendering to images is M2).
+- `FixtureVariantSource`: local or uploaded variants for the eval set and as the demo fallback.
+
+## 8. Repo layout
 
 ```
 keel/
 ├─ apps/
-│  ├─ api/        Hono server: REST, WhatsApp webhook, onboarding
-│  ├─ worker/     scheduler + LangGraph cycle runner
-│  └─ web/        Vite + React dashboard
+│  ├─ api/        Hono: auth, sessions, routes, SSE hub
+│  ├─ worker/     scheduler + cycle runner
+│  └─ web/        Keel Bridge
 ├─ packages/
-│  ├─ core/       zod schemas: findings, rulebook, proposals, defect codes, policy
-│  ├─ agents/     LangGraph graph, nodes, prompts, investigator tools
-│  ├─ meta/       clients: Model API, open-weight, SAM, Ads Graph, Ads MCP, WhatsApp, Voice
-│  └─ db/         Drizzle schema, migrations, hash-chained audit log
-├─ eval/          labelled variant pairs + runner (precision/recall, cost per variant)
-└─ docs/          IDEATION.md, ARCHITECTURE.md
+│  ├─ core/       schemas, defects, policy, roles   (+ tests/)
+│  ├─ agents/     graph, judges, rulebook, runtime, push, trace context   (+ tests/)
+│  ├─ meta/       Model API, open-weight, SAM, Marketing API, Ads MCP, variants, voice
+│  └─ db/         schema, migrations, audit, crypto, events, demo seed   (+ tests/)
+├─ eval/          labelled variant pairs + runner
+├─ scripts/       local Postgres, demo seed
+└─ docs/
 ```
 
-## 8. Stack
+## 9. Stack
 
 | Layer | Choice | Reason |
 |---|---|---|
 | Language | TypeScript, Node 22, npm workspaces | One language end to end |
-| Agent runtime | LangGraph.js + Postgres checkpointer | `interrupt()` for approvals, resumable cycles |
-| API | Hono | Small, fast, runs anywhere |
-| DB | Postgres (Neon) + Drizzle | Relational audit + checkpoints in one place |
-| Objects | S3-compatible (Cloudflare R2), local FS in dev | Variant images and masks |
-| Web | Vite + React + Tailwind | Fast dashboard |
-| Model clients | `openai` SDK against Meta Model API and Baseten | Both are OpenAI-compatible |
-| MCP | `@modelcontextprotocol/sdk` client | Ads MCP insights and anomaly signal |
-| Media | ffmpeg | Voice-note OGG → PCM16; video frames |
+| Agent runtime | LangGraph.js + Postgres checkpointer | `interrupt()` for decisions, resumable cycles |
+| API | Hono (node-server, SSE, cookies, CSRF) | Small, fast |
+| DB | Postgres + Drizzle; `embedded-postgres` for local dev | No Docker needed |
+| Web | Vite, React 19, TanStack Router + Query, Tailwind 4 | Fast to build, typed routes |
+| Push | `web-push` (VAPID) + service worker | Phone alerts without an app store |
+| Model clients | `openai` SDK against Meta Model API and Baseten | Both OpenAI-compatible |
+| MCP | `@modelcontextprotocol/sdk` | Ads MCP insights |
 | Tests | Vitest | Unit + eval harness |
-| Deploy | API + worker on Cloud Run or Railway; web on Vercel | Familiar, quick |
+| Deploy | API + worker on Cloud Run or Railway; web on Vercel; Postgres on Neon | Familiar, quick |
 
-## 9. Security
+## 10. Security
 
-- Meta access via system-user token scoped to chosen ad accounts; tokens referenced by ID, stored in a secrets manager.
-- Ads MCP connections use Meta's own OAuth; start read-only.
-- WhatsApp webhook signature (`X-Hub-Signature-256`) verified; proposal tokens HMAC-signed and single use.
-- No action without approval unless the brand opted into a specific auto-action.
-- Zero-data-retention requested on the Model API where offered.
+- Facebook Login for Business with a `state` cookie; long-lived token stored AES-256-GCM encrypted (`KEEL_SECRET`).
+- Sessions: random id in a signed, HttpOnly, SameSite=Lax cookie; server-side expiry.
+- Every state-changing request must come from an allowed Origin; Hono CSRF middleware on top.
+- Media endpoint serves only from `eval/fixtures` and `.data/media`.
+- No action without a decision unless the brand opts into a specific auto-action.
+- Dev sign-in only when `DEV_AUTH=1`; the demo workspace cannot start real checks.
 
-## 10. Day-1 verification checklist
+## 11. Day-1 verification checklist
 
-- [ ] Meta Model API key works; confirm exact IDs for Muse Spark, Muse Wonder, Muse Image, SAM 3.1.
+- [ ] Meta Model API key works; confirm IDs for Muse Spark, Muse Wonder, Muse Image, SAM 3.1.
 - [ ] SAM 3.1 request/response shape (Responses API, mask format).
-- [ ] Baseten `meta-models/muse-spark-open-1026` call with image input.
-- [ ] Marketing API sandbox account: list ads, read `creative_features_spec` / `degrees_of_freedom_spec`.
-- [ ] Ad previews endpoint: do AI-enhanced variants render? (ask in #office-hours)
-- [ ] WhatsApp Cloud API test number: send an interactive button message, receive the reply webhook.
+- [ ] Baseten `meta-models/muse-spark-open-1026` call with an image.
+- [ ] Meta app: Facebook Login for Business configuration with `ads_read`, `ads_management`, `business_management`; app in development mode with you as admin.
+- [ ] Marketing API on a test ad account: list ads, read `degrees_of_freedom_spec`.
+- [ ] Ad previews: do AI-enhanced variants render? (ask in #office-hours)
+- [ ] VAPID keys generated; push arrives on your phone from the installed app.
 - [ ] Ads MCP: connect, call `ads_insights_anomaly_signal`.

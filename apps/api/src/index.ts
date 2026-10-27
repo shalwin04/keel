@@ -1,55 +1,34 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
-import { Command } from "@langchain/langgraph";
-import { desc } from "drizzle-orm";
-import type { Approval } from "@keel/core";
+import { csrf } from "hono/csrf";
+import { logger } from "hono/logger";
 import { createRuntime } from "@keel/agents";
-import { schema } from "@keel/db";
-import { decodeButtonId, verifyWebhookSignature } from "@keel/meta";
+import { authRoutes, requireUser } from "./auth.ts";
+import type { AppEnv } from "./env.ts";
+import { createEventHub } from "./events.ts";
+import { apiRoutes } from "./routes.ts";
 
 const rt = await createRuntime();
-const app = new Hono();
+const hub = await createEventHub(rt.db, process.env.DATABASE_URL!);
+const webOrigin = process.env.WEB_BASE_URL ?? "http://localhost:5173";
+
+const app = new Hono<AppEnv>();
+app.use(logger());
+// Same-site cookies, plus an Origin check on every state-changing request (forms and JSON alike).
+const allowedOrigins = [webOrigin, process.env.PUBLIC_BASE_URL ?? "http://localhost:8787"];
+app.use(csrf({ origin: allowedOrigins }));
+app.use(async (c, next) => {
+  const origin = c.req.header("origin");
+  if (c.req.method !== "GET" && c.req.method !== "HEAD" && origin && !allowedOrigins.includes(origin)) {
+    return c.json({ error: "cross-origin request blocked" }, 403);
+  }
+  await next();
+});
 
 app.get("/health", (c) => c.json({ ok: true, service: "keel-api" }));
-
-app.get("/api/findings", async (c) =>
-  c.json(await rt.db.select().from(schema.findings).orderBy(desc(schema.findings.createdAt)).limit(100)));
-
-app.get("/api/audit", async (c) =>
-  c.json(await rt.db.select().from(schema.auditLog).orderBy(desc(schema.auditLog.seq)).limit(200)));
-
-/** WhatsApp webhook verification handshake. */
-app.get("/webhooks/whatsapp", (c) => {
-  const q = c.req.query();
-  return q["hub.verify_token"] === process.env.WHATSAPP_VERIFY_TOKEN ? c.text(q["hub.challenge"] ?? "") : c.text("forbidden", 403);
-});
-
-/** Button taps resume the paused cycle with the owner's decision. */
-app.post("/webhooks/whatsapp", async (c) => {
-  const raw = await c.req.text();
-  if (!verifyWebhookSignature(raw, c.req.header("x-hub-signature-256"))) return c.text("bad signature", 401);
-  const body = JSON.parse(raw);
-  const messages: any[] = body?.entry?.[0]?.changes?.[0]?.value?.messages ?? [];
-
-  for (const m of messages) {
-    const buttonId: string | undefined = m?.interactive?.button_reply?.id;
-    if (!buttonId) continue; // TODO(day 7): voice notes → Muse Voice Transcribe → intent
-    const decoded = decodeButtonId(buttonId);
-    if (!decoded) continue;
-    const threadId = await rt.threadForProposal(decoded.proposalId);
-    if (!threadId) continue;
-    const approval: Approval = {
-      proposalId: decoded.proposalId,
-      decision: decoded.decision as Approval["decision"],
-      decidedBy: m.from,
-      channel: "whatsapp_button",
-    };
-    // Resume in the background; WhatsApp expects a fast 200.
-    void rt.graph.invoke(new Command({ resume: approval }), { configurable: { thread_id: threadId } })
-      .catch((err) => console.error("resume failed", err));
-  }
-  return c.text("ok");
-});
+app.route("/auth", authRoutes(rt.db));
+app.use("/api/*", requireUser(rt.db));
+app.route("/api", apiRoutes(rt, hub));
 
 const port = Number(process.env.API_PORT ?? 8787);
 serve({ fetch: app.fetch, port });

@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Variant } from "@keel/core";
 import type { AdsGraphClient } from "./ads.ts";
+import { REPO_ROOT } from "./config.ts";
 
 /** Where rendered variants come from. Pluggable so the demo never depends on one API surface. */
 export interface VariantSource {
@@ -23,7 +24,7 @@ export class MetaPreviewSource implements VariantSource {
 
 /** Local fixtures: eval/fixtures/<adId>/variant-*.{png,jpg}. Used for the eval set and as the demo fallback. */
 export class FixtureVariantSource implements VariantSource {
-  constructor(private root = "eval/fixtures") {}
+  constructor(private root = join(REPO_ROOT, "eval/fixtures")) {}
   async listVariants(adId: string): Promise<Variant[]> {
     const dir = join(this.root, adId);
     const files = await readdir(dir).catch(() => [] as string[]);

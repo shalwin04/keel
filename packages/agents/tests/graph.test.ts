@@ -44,7 +44,7 @@ describe("watch cycle", () => {
     expect(deps.executed).toHaveLength(0);
 
     const proposalId = paused.values.proposals[0]!.id;
-    await graph.invoke(new Command({ resume: { proposalId, decision: "approve", decidedBy: "owner", channel: "whatsapp_button" } }), cfg);
+    await graph.invoke(new Command({ resume: { proposalId, decision: "approve", decidedBy: "owner", channel: "web" } }), cfg);
     expect(deps.executed).toEqual(["PAUSE_AD:ad1"]);
   });
 
@@ -54,7 +54,7 @@ describe("watch cycle", () => {
     const cfg = { configurable: { thread_id: "cycle-2" } };
     await graph.invoke({ cycleId: "c2", accountId: "act_1" }, cfg);
     const proposalId = (await graph.getState(cfg)).values.proposals[0]!.id;
-    await graph.invoke(new Command({ resume: { proposalId, decision: "reject", decidedBy: "owner", channel: "whatsapp_button" } }), cfg);
+    await graph.invoke(new Command({ resume: { proposalId, decision: "reject", decidedBy: "owner", channel: "web" } }), cfg);
     expect(deps.executed).toHaveLength(0);
   });
 });

@@ -1,0 +1,10 @@
+{
+  "name": "Keel Bridge",
+  "short_name": "Keel",
+  "description": "Review what Meta's AI changed in your ads, and decide in one tap.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#EEF2F1",
+  "theme_color": "#14324A",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

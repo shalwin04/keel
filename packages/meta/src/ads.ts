@@ -54,6 +54,12 @@ export class AdsGraphClient {
     return this.req<{ data: { body: string }[] }>(`${adId}/previews`, { params: { ad_format: adFormat } });
   }
 
+  getAd(adId: string) {
+    return this.req<{ id: string; status: string; effective_status: string; creative: { id: string } }>(adId, {
+      params: { fields: "id,status,effective_status,creative{id}" },
+    });
+  }
+
   pauseAd(adId: string) {
     return this.req<{ success: boolean }>(adId, { method: "POST", params: { status: "PAUSED" } });
   }

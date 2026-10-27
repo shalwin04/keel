@@ -27,6 +27,27 @@ export interface JsonCallOpts<T> {
   images?: ImageInput[];
   schema: z.ZodType<T>;
   reasoningEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  /** Called after every model request, for the live trace and cost accounting. */
+  onCall?: (info: ModelCallInfo) => void;
+}
+
+export interface ModelCallInfo {
+  model: string;
+  ms: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+}
+
+/** USD per million tokens [input, output]. Override per deployment; unknown models report no cost. */
+export const PRICES: Record<string, [number, number]> = {
+  "muse-spark-1.1": [1.25, 4.25],
+  "muse-wonder-1.0": [4, 20],
+};
+
+export function costOf(model: string, inTok = 0, outTok = 0): number | undefined {
+  const p = PRICES[model];
+  return p ? (inTok * p[0] + outTok * p[1]) / 1e6 : undefined;
 }
 
 /** One multimodal call that must return JSON matching `schema`. Retries once on a parse failure. */
@@ -36,6 +57,7 @@ export async function callJson<T>(o: JsonCallOpts<T>): Promise<T> {
     { role: "user", content: [{ type: "text", text: o.text }, ...(o.images ?? []).map(imagePart)] },
   ];
   for (let attempt = 0; attempt < 2; attempt++) {
+    const t0 = Date.now();
     const res = await o.client.chat.completions.create({
       model: o.model,
       messages,
@@ -43,6 +65,9 @@ export async function callJson<T>(o: JsonCallOpts<T>): Promise<T> {
       // Meta extension; ignored by providers that don't support it.
       ...(o.reasoningEffort ? ({ reasoning_effort: o.reasoningEffort } as object) : {}),
     });
+    const inTok = res.usage?.prompt_tokens;
+    const outTok = res.usage?.completion_tokens;
+    o.onCall?.({ model: o.model, ms: Date.now() - t0, inputTokens: inTok, outputTokens: outTok, costUsd: costOf(o.model, inTok, outTok) });
     const raw = res.choices[0]?.message?.content ?? "";
     const parsed = o.schema.safeParse(safeJson(raw));
     if (parsed.success) return parsed.data;

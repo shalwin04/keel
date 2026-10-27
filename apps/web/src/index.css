@@ -1,1 +1,21 @@
 @import "tailwindcss";
+
+@theme {
+  --color-chart: #EEF2F1;      /* chart paper: page */
+  --color-chart-deep: #E1E8E6; /* recessed panels */
+  --color-hull: #14324A;       /* ink and primary */
+  --color-hull-soft: #3E5A6E;  /* secondary text */
+  --color-fog: #9AA7AE;        /* rules and muted text */
+  --color-brass: #B8862B;      /* actions and selection */
+  --color-port: #C8372D;       /* critical */
+  --color-ember: #CF6A2A;      /* high */
+  --color-ochre: #B99A2E;      /* medium */
+  --color-starboard: #2F7D5B;  /* verified, approved */
+  --font-sans: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+}
+
+html { font-optical-sizing: auto; }
+body { @apply bg-chart text-hull antialiased; font-variant-numeric: tabular-nums; }
+:focus-visible { outline: 2px solid var(--color-brass); outline-offset: 2px; }
+.display { font-stretch: 82%; letter-spacing: -0.015em; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

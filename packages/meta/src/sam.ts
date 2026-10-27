@@ -4,6 +4,7 @@ import type { ImageInput } from "./models.ts";
 
 /** Region isolation. SAM 3.1 behind an interface so the API shape can change without touching the agent. */
 export interface Segmenter {
+  readonly name: string;
   segment(image: ImageInput, concepts: string[]): Promise<Region[]>;
 }
 
@@ -12,6 +13,7 @@ export interface Segmenter {
  * TODO(day 1): confirm request fields and the mask/box format against dev.meta.ai/docs/sam.
  */
 export class MetaSamSegmenter implements Segmenter {
+  readonly name = "sam-3.1";
   async segment(image: ImageInput, concepts: string[]): Promise<Region[]> {
     const res = await fetch(`${config.metaApiBase}/responses`, {
       method: "POST",
@@ -41,6 +43,7 @@ export function parseSamOutput(_json: unknown, _concepts: string[]): Region[] {
 
 /** Fallback: treat the whole image as one region. */
 export class WholeImageSegmenter implements Segmenter {
+  readonly name = "whole-image";
   async segment(_image: ImageInput, concepts: string[]): Promise<Region[]> {
     return concepts.map((label) => ({ label, box: [0, 0, 1, 1] as [number, number, number, number] }));
   }

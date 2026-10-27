@@ -16,6 +16,7 @@ export const CycleState = Annotation.Root({
   proposals: replace<Proposal[]>(() => []),
   approvals: append<Approval>(),
   executed: append<{ proposalId: string; ok: boolean; detail: string }>(),
+  verified: append<{ proposalId: string; ok: boolean; detail: string }>(),
 });
 
 export type CycleStateT = typeof CycleState.State;

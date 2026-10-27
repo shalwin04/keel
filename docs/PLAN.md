@@ -2,35 +2,35 @@
 
 **Deadline: Thu Nov 5, 7:30 AM IST** (Wed Nov 4, 9:00 PM ET). Submission needs a public repo, a 3-minute demo video and a live product.
 
-Status as of **Tue Oct 27, 12:30 PM IST** (day 1 of 9).
+Status as of **Tue Oct 27, 4:00 PM IST** (day 1 of 9). Approvals moved from WhatsApp to **Keel Bridge**, Keel's own web app.
 
 ## Where we are
 
 | Area | Status | Notes |
 |---|---|---|
-| Product spec, architecture | Done | `docs/IDEATION.md`, `docs/ARCHITECTURE.md` |
-| Monorepo, tooling | Done | npm workspaces, TypeScript 7, Vitest, Drizzle, Vite |
-| Decision policy | Done | Pure `decide()`, tested |
-| Drift detection | Done | `diffFeatures()`, tested |
-| Watch cycle graph | Done (skeleton) | Approval pause and resume tested with fakes |
-| Hash-chained audit log | Done | Chain + verify, tested; written to Postgres |
-| Approval tokens | Done | Signed, single-use button ids, tested |
-| DB schema + migration | Done | 9 tables, first migration generated |
+| Product spec, architecture | Done | Updated for Keel Bridge |
+| Monorepo, tooling | Done | npm workspaces, TypeScript 7, Vitest, Drizzle, Vite; local Postgres without Docker |
+| Decision policy, roles | Done | `decide()` and `canDecide()`, tested |
+| Drift detection | Done | Tested |
+| Watch cycle graph | Done (skeleton) | 11 steps incl. notify and verify; pause/resume tested with fakes |
+| Live trace | Done | Node and model-call events → Postgres NOTIFY → SSE → browser |
+| Hash-chained audit log | Done | Verified on every audit page load |
+| Keel Bridge screens | Done (first pass) | Review with compare viewer, live trace, accounts + lock board, audit, onboarding, sign-in |
+| Auth | Done, untested live | Facebook Login for Business flow; sessions; Origin checks; dev and demo sign-in tested |
+| Web push | Done, untested on a phone | Service worker, subscribe, send; needs VAPID keys |
+| Demo workspace | Done | Seeded Northline brand; simulated decisions; reset |
 | Model API, open-weight clients | Code written, untested live | Model IDs unconfirmed |
 | SAM 3.1 segmenter | Stub | Output parser returns nothing yet |
-| Marketing API client | Code written, untested live | List, read creative, features spec, previews, pause, create, swap |
-| Ads MCP client | Code written, untested live | Anomaly-signal tool arguments unconfirmed |
-| WhatsApp send + webhook | Code written, untested live | Card image not built |
-| Variant sources | Partial | Fixtures work; Meta previews return HTML, not yet images |
-| Actions | Partial | Pause only; relock, revert, replace not built; no verify step |
-| Rulebook drafting (Muse Wonder) | Not started | Prompt exists |
+| Marketing API client | Code written, untested live | |
+| Variant sources | Partial | Fixtures work; Meta previews return HTML, not images |
+| Actions | Partial | Pause + verify only; relock, revert, replace not built |
+| Rulebook drafting | Code written, untested live | Muse Wonder call + onboarding screen |
 | Investigator sub-agent | Not started | |
 | Muse Image replacement | Not started | |
-| Voice notes (Muse Voice Transcribe) | Not started | |
-| Eval set | Not started | Runner and case format exist; no fixtures |
-| Dashboard | Skeleton | Findings list only |
+| Voice commands | Not started | Stretch |
+| Eval set | Not started | Runner and format exist |
 | Deploy | Not started | |
-| Public GitHub repo | Not started | No remote yet |
+| Public GitHub repo | Not started | |
 
 ## Milestones
 
@@ -45,7 +45,8 @@ Each milestone has a "done when" test. Dates are targets; cut scope, not the dea
 - [ ] Baseten: one `meta-models/muse-spark-open-1026` call with an image
 - [ ] Marketing API: system-user token on a test ad account; list ads; read `degrees_of_freedom_spec`
 - [ ] Ask in #office-hours (7:30 PM IST): do ad previews render AI-enhanced variants?
-- [ ] WhatsApp Cloud API test number: send one interactive button message, receive the reply webhook (ngrok)
+- [ ] Meta app with Facebook Login for Business (development mode); sign in to Keel Bridge with it
+- [ ] Generate VAPID keys; install Keel Bridge on your phone; receive a test push
 - [ ] Watch Agents 101 (9:30 PM IST)
 
 **Done when:** every external API has answered one real request, and `.env.example` holds confirmed model IDs.
@@ -96,22 +97,23 @@ Each milestone has a "done when" test. Dates are targets; cut scope, not the dea
 
 **Done when:** an approved revert changes the live test ad and Keel confirms it.
 
-### M6 · WhatsApp end to end — Mon Nov 2
+### M6 · Review flow end to end — Mon Nov 2
 
-- [ ] Side-by-side card image (original | served, masks drawn), hosted at `/cards/:id.png`
-- [ ] Button tap resumes the right cycle; duplicate taps ignored
-- [ ] `REPLACE_CREATIVE`: Muse Image variant → second approval → swap
-- [ ] Stretch: voice-note approval via Muse Voice Transcribe (ffmpeg → PCM16)
+- [ ] A real cycle pauses, the card appears live in Keel Bridge, push arrives on the phone
+- [ ] Approve from the phone → act → verify → trace shows the read-back
+- [ ] `REPLACE_CREATIVE`: Muse Image variant shown in the card → second decision → swap
+- [ ] Stretch: voice command bar (Muse Voice Transcribe from the browser mic)
 
-**Done when:** phone buzzes, one tap fixes the live ad, audit log shows every step.
+**Done when:** phone alert, one tap fixes the live ad, audit log shows every step.
 
-### M7 · Dashboard and deploy — Tue Nov 3
+### M7 · Polish and deploy — Tue Nov 3
 
-- [ ] Dashboard: accounts, findings feed, side-by-side viewer, audit log with chain check
-- [ ] Deploy API + worker (Cloud Run or Railway), web (Vercel), Postgres (Neon)
+- [ ] Rulebook editor; show which rule triggered each finding
+- [ ] Replacement studio (pick between Muse Image options)
+- [ ] Deploy API + worker (Cloud Run or Railway), web (Vercel), Postgres (Neon); demo workspace seeded
 - [ ] Live URL in README
 
-**Done when:** a judge can open the live dashboard and see a real catch.
+**Done when:** a judge opens the live URL, enters the demo, and approves a finding.
 
 ### M8 · Demo and submission — Wed Nov 4
 
@@ -125,14 +127,14 @@ Each milestone has a "done when" test. Dates are targets; cut scope, not the dea
 
 ## Cut order if behind
 
-1. Voice notes
+1. Voice command bar
 2. Shield pre-launch check
 3. Video ads
 4. Investigator sub-agent
 5. Muse Image replacement
-6. Dashboard polish
+6. Rulebook editor and replacement studio polish
 
-Never cut: watch, drift, two-tier judge, WhatsApp approval, one real action with verify, eval numbers.
+Never cut: watch, drift, two-tier judge, Keel Bridge review with live trace, one real action with verify, eval numbers, demo workspace.
 
 ## Open questions
 
@@ -143,3 +145,4 @@ Never cut: watch, drift, two-tier judge, WhatsApp approval, one real action with
 | Does the Model API expose Muse Wonder's Active Memory? | M4 (or store memory ourselves) | Docs, #office-hours |
 | Exact Muse Image model ID and edit endpoint | M6 replacement | Docs |
 | Ads MCP auth for a headless worker | Insights in cycle | Docs; fall back to Marketing API |
+| Facebook Login for Business permissions in development mode | Sign-in with real accounts | Meta app dashboard |

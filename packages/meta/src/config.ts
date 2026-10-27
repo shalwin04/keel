@@ -4,6 +4,11 @@ const env = (k: string, fallback?: string): string => {
   return v;
 };
 
+import { fileURLToPath } from "node:url";
+
+/** Repo root, so paths work whichever workspace the process starts in. */
+export const REPO_ROOT = process.env.KEEL_ROOT ?? fileURLToPath(new URL("../../../", import.meta.url));
+
 /** Read lazily so tests and the web build don't need secrets. */
 export const config = {
   get metaApiKey() { return env("META_API_KEY"); },
@@ -24,10 +29,10 @@ export const config = {
     get version() { return env("META_GRAPH_VERSION", "v24.0"); },
     get token() { return env("META_SYSTEM_USER_TOKEN"); },
   },
-  whatsapp: {
-    get phoneNumberId() { return env("WHATSAPP_PHONE_NUMBER_ID"); },
-    get token() { return env("WHATSAPP_TOKEN"); },
-    get appSecret() { return env("WHATSAPP_APP_SECRET"); },
+  facebook: {
+    get appId() { return env("META_APP_ID"); },
+    get appSecret() { return env("META_APP_SECRET"); },
+    get loginConfigId() { return env("META_LOGIN_CONFIG_ID"); },
   },
   get asrWs() { return env("META_ASR_WS", "wss://api.meta.ai/v1/asr/realtime"); },
 };

@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { DEFAULT_SEVERITY, DefectCodeSchema, ScreenResultSchema, type AdSnapshot, type Finding, type Rulebook, type ScreenResult, type Variant } from "@keel/core";
-import { callJson, config, metaClient, openWeightClient, type ImageInput, type Segmenter } from "@keel/meta";
+import { callJson, config, metaClient, openWeightClient, type ImageInput, type ModelCallInfo, type Segmenter } from "@keel/meta";
 import { INSPECT_SYSTEM, SCREEN_SYSTEM, SEGMENT_CONCEPTS, rulebookBlock } from "./prompts.ts";
 
 export type LoadImage = (ref: string) => Promise<ImageInput>;
+export type OnModelCall = (info: ModelCallInfo & { tier: "screen" | "inspect" | "segment" }) => void;
 
 /** Tier 1: open-weight screen on every variant (Muse Spark Open / Glimmer). */
-export function makeScreen(load: LoadImage) {
+export function makeScreen(load: LoadImage, onCall?: OnModelCall) {
   return async (snap: AdSnapshot, v: Variant, rulebook?: Rulebook): Promise<ScreenResult> => {
     const images = [await load(snap.originalImageRef ?? ""), await load(v.imageRef)];
     return callJson({
@@ -17,6 +18,7 @@ export function makeScreen(load: LoadImage) {
       text: `variantId: ${v.id}\nPlacement: ${v.placement}\nAd copy: ${snap.primaryText ?? "(none)"}\n${rulebookBlock(rulebook)}\nImage 1 = APPROVED ORIGINAL, Image 2 = VARIANT.`,
       images,
       schema: ScreenResultSchema,
+      onCall: (i) => onCall?.({ ...i, tier: "screen" }),
     });
   };
 }
@@ -32,14 +34,16 @@ const InspectOut = z.object({
 });
 
 /** Tier 2: SAM 3.1 isolates regions, Muse Spark compares them against the original and the rulebook. */
-export function makeInspect(load: LoadImage, segmenter: Segmenter) {
+export function makeInspect(load: LoadImage, segmenter: Segmenter, onCall?: OnModelCall) {
   return async (snap: AdSnapshot, v: Variant, screen: ScreenResult, rulebook?: Rulebook): Promise<Finding[]> => {
     const original = await load(snap.originalImageRef ?? "");
     const variant = await load(v.imageRef);
+    const t0 = Date.now();
     const [origRegions, varRegions] = await Promise.all([
       segmenter.segment(original, SEGMENT_CONCEPTS),
       segmenter.segment(variant, SEGMENT_CONCEPTS),
     ]);
+    onCall?.({ model: segmenter.name, ms: Date.now() - t0, tier: "segment" });
     const out = await callJson({
       client: metaClient(),
       model: config.models.spark,
@@ -54,6 +58,7 @@ export function makeInspect(load: LoadImage, segmenter: Segmenter) {
       images: [original, variant],
       schema: InspectOut,
       reasoningEffort: "medium",
+      onCall: (i) => onCall?.({ ...i, tier: "inspect" }),
     });
     return out.findings.map((f) => ({
       id: randomUUID(),
@@ -66,6 +71,8 @@ export function makeInspect(load: LoadImage, segmenter: Segmenter) {
       evidence: f.evidence,
       regions: varRegions.filter((r) => f.regionLabels.includes(r.label)),
       detectedBy: "inspect" as const,
+      originalRef: snap.originalImageRef,
+      variantRef: v.imageRef,
     }));
   };
 }

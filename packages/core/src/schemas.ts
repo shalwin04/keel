@@ -78,6 +78,9 @@ export const FindingSchema = z.object({
   evidence: z.array(z.string()),
   regions: z.array(RegionSchema).default([]),
   detectedBy: z.enum(["drift", "screen", "inspect", "investigate", "shield"]),
+  /** Image refs for the review card: approved original and the served variant. */
+  originalRef: z.string().optional(),
+  variantRef: z.string().optional(),
 });
 export type Finding = z.infer<typeof FindingSchema>;
 
@@ -99,8 +102,21 @@ export type Proposal = z.infer<typeof ProposalSchema>;
 export const ApprovalSchema = z.object({
   proposalId: z.string(),
   decision: z.enum(["approve", "reject", "replace"]),
+  /** Keel Bridge user id. */
   decidedBy: z.string(),
-  channel: z.enum(["whatsapp_button", "whatsapp_voice", "dashboard"]),
+  channel: z.enum(["web", "voice"]),
   transcript: z.string().optional(),
 });
 export type Approval = z.infer<typeof ApprovalSchema>;
+
+/** Live events for the trace view and the review queue (sent over SSE). */
+export const TRACE_KINDS = ["cycle_start", "node_start", "node_end", "model_call", "finding", "proposal", "decision", "action", "cycle_end", "error"] as const;
+export const TraceEventSchema = z.object({
+  cycleId: z.string(),
+  kind: z.enum(TRACE_KINDS),
+  node: z.string().optional(),
+  at: z.string(),
+  data: z.record(z.string(), z.unknown()).default({}),
+});
+export type TraceEvent = z.infer<typeof TraceEventSchema>;
+export type TraceKind = (typeof TRACE_KINDS)[number];

@@ -35,7 +35,7 @@ Three structural facts make this a product, not a complaint:
 | Performance agencies (10–30 accounts per manager) | Hours of manual toggle and preview checks per week | Replaces a junior's QA time across every client |
 | In-house growth teams at larger brands | Legal/brand sign-off on every creative | Audit trail of what ran and who approved it |
 
-Founders and agency managers in India live on WhatsApp — that's Keel's alert and approval channel.
+Every finding lands in **Keel Bridge**, Keel's own web app, built for fast review: a queue sorted by severity, a side-by-side compare viewer, keyboard shortcuts for agencies, and push alerts to the phone. A WhatsApp channel for Indian founders is a later addition.
 
 ## 3. Product: one loop, five capabilities
 
@@ -52,7 +52,7 @@ Keel is an **autonomous agent that runs a watch → judge → act loop** on ever
 | **Watch** | Pulls every live ad, its creative, its enhancement settings and rendered variant previews | Marketing API, Ads MCP |
 | **Lock** | Snapshots each creative's enhancement settings; flags any change the brand didn't approve | Marketing API (`creative_features_spec`) |
 | **Judge** | Two-tier review of every served variant against the approved original and the brand rulebook | Muse Spark Open / Glimmer (screen), SAM 3.1 (regions), Muse Spark (compare), Muse Wonder (investigate) |
-| **Act** | Pause, revert to an un-enhanced creative, or replace with an on-brand variant — only after approval | Marketing API, Muse Image, WhatsApp |
+| **Act** | Pause, revert to an un-enhanced creative, or replace with an on-brand variant — only after a decision in Keel Bridge | Marketing API, Muse Image |
 | **Shield** | Pre-launch check of new creatives against Meta ad policy and brand rules | Muse Spark, Muse Wonder |
 
 ### Defect taxonomy (what "off-brand" means, concretely)
@@ -75,15 +75,15 @@ Onboarding takes ~2 minutes: connect the ad account, pick 3–10 best past ads, 
 
 ### Human in the loop, always
 
-Nothing that changes a live ad or spend happens without an explicit approval. The WhatsApp card shows *approved original | what Meta served*, the highlighted regions, the reason and three buttons: **Pause**, **Revert**, **Make on-brand replacement**. Owners can also reply with a voice note ("pause it and make a new one"), transcribed with Muse Voice Transcribe.
+Nothing that changes a live ad or spend happens without an explicit decision in Keel Bridge. The review card shows the approved original and what Meta served under a draggable waterline, outlines of the changed regions, the reasons and three choices: **approve the proposed action**, **make an on-brand replacement**, or **leave it running**. Owners can approve anything; reviewers can revert and reject; viewers watch. A push alert brings the owner to the card from their phone.
 
 ## 4. Why this wins on the rubric
 
 | Criterion (weight) | How Keel scores |
 |---|---|
 | Impact (30%) | Documented, quantified pain at real brands; a buyer who already spends money on Meta; directly fixes a trust problem Meta itself has |
-| Use of Meta AI tooling (25%) | Seven Meta tools in one loop: Ads MCP + Marketing API, Muse Spark Open/Glimmer, SAM 3.1, Muse Spark, Muse Wonder, Muse Image, Muse Voice Transcribe — plus Muse Code to build it |
-| Demo (25%) | A visible "catch" moment, a phone that buzzes, a one-tap fix that changes the live ad |
+| Use of Meta AI tooling (25%) | Eight Meta tools: Facebook Login for Business, Ads MCP + Marketing API, Muse Spark Open/Glimmer, SAM 3.1, Muse Spark, Muse Wonder, Muse Image, Muse Voice Transcribe — plus Muse Code to build it |
+| Demo (25%) | A visible "catch" moment, a push alert on the phone, a live trace, a one-tap fix that changes the live ad |
 | Technical depth (20%) | Deterministic agent spine with model judgment at the edges, approval interrupts, hash-chained audit log, measured precision/recall on a labelled eval set, cost per variant by tier |
 
 Bonus prizes in reach: **Best Build on Open-Weight Models** (screening tier on Muse Spark Open/Glimmer), **Best Agentic Use-Case**, **Most Viral** (the "caught Meta's AI" clip), **Community Vote**.
@@ -103,14 +103,15 @@ Bonus prizes in reach: **Best Build on Open-Weight Models** (screening tier on M
 | P0 | Variant source: Meta previews **or** fixture variants (fallback, see risks) |
 | P0 | Two-tier judge: open-weight screen → SAM 3.1 regions → Muse Spark comparison → structured findings |
 | P0 | Brand rulebook drafted by Muse Wonder from sample ads |
-| P0 | WhatsApp alert card with Pause / Revert buttons → approval interrupt → Marketing API action → verify |
+| P0 | Keel Bridge review queue: compare viewer, decision → approval interrupt → Marketing API action → verify |
+| P0 | Live trace view and push alerts |
 | P0 | Eval set (40 labelled pairs) + precision/recall report |
 | P1 | Muse Image on-brand replacement with second approval |
-| P1 | Dashboard: accounts, findings feed, side-by-side viewer, audit log |
+| P1 | Lock board, audit timeline, onboarding with rulebook drafting |
 | P1 | Investigator sub-agent (Muse Wonder + tools) for ambiguous cases |
 | P2 | Shield pre-launch check |
 | P2 | Video ads: SAM 3.1 tracking across frames, voiceover transcription + claim check |
-| P2 | Voice-note approvals |
+| P2 | Voice command bar (Muse Voice Transcribe from the browser mic) |
 
 **Cut order if behind:** P2 → investigator → replacement → dashboard polish. Watch, Lock, Judge, Act are the product.
 
@@ -121,8 +122,8 @@ Bonus prizes in reach: **Best Build on Open-Weight Models** (screening tier on M
 | Marketing API doesn't expose rendered previews of AI-enhanced variants | Medium | `FixtureVariantSource`: brand uploads exports / we generate realistic "bad" variants with Muse Image on a test account; drift + act still run on the real API. Ask Meta in #office-hours on day 1. |
 | `creative_features_spec` is read-only on the features endpoint; creatives may be immutable | High | "Revert" = create a new creative with enhancements `OPT_OUT`, then point the ad at it. Already in the design. |
 | SAM 3.1 API shape (Responses API, streamed markers) differs from expectations | Medium | `Segmenter` interface; fallback to whole-image comparison with Muse Spark bounding boxes |
-| WhatsApp Cloud API business verification delays | Medium | Use the test number Meta provides for development; dashboard approvals as backup |
-| Muse Voice Transcribe is realtime-only (WebSocket, PCM16) | Known | ffmpeg converts WhatsApp OGG/Opus to 16 kHz PCM, stream in push-to-talk mode |
+| Facebook Login for Business needs app review for public use | Known | Development mode covers you and test users through the hackathon; judges use the demo workspace |
+| Muse Voice Transcribe is realtime-only (WebSocket, PCM16) | Known | Stream the browser mic directly in push-to-talk mode |
 | Model latency/cost across hundreds of variants | Medium | Open-weight screen first; only suspicious variants go to Spark/Wonder; cache by image hash |
 
 ## 7. Demo script (3 minutes)
@@ -131,7 +132,7 @@ Bonus prizes in reach: **Best Build on Open-Weight Models** (screening tier on M
 2. **0:15 Onboard (30s).** OAuth/system-user connect, upload 3 past ads; Muse Wonder drafts the rulebook on screen.
 3. **0:45 The catch (60s).** Keel's cycle runs. A served variant has swapped the model and shifted the shoe colour. Side-by-side card, SAM masks highlighting the changed regions, the open-weight screen score, Muse Spark's reasons.
 4. **1:45 The drift (20s).** Flip `image_background_gen` on in Ads Manager. Next cycle flags it and logs who/what/when.
-5. **2:05 The fix (40s).** Phone buzzes on WhatsApp. Tap **Make on-brand replacement** → Muse Image variant arrives → tap **Approve** → ad updated through the API → Keel re-reads and verifies.
+5. **2:05 The fix (40s).** Phone shows a Keel push alert; tapping it opens the review card. Drag the waterline, toggle the outlines, press **P** → Muse Image variant → approve → the live trace shows the swap and the read-back from Meta.
 6. **2:45 The number (15s).** "[N] variants audited in [T] seconds, [P]% precision on our eval set, [cost] per variant on the open-weight tier" — real numbers from `npm run eval`, never placeholders in the final video. Close on the positive pitch.
 
 Every frame labelled with what was built during the hackathon.
@@ -140,14 +141,14 @@ Every frame labelled with what was built during the hackathon.
 
 | Day | Date | Goal |
 |---|---|---|
-| 1 | Tue Oct 27 | Repo, docs, credits; API access spike (Model API, Marketing API sandbox, previews, features spec, WhatsApp test number). Ask preview question in office hours (7:30 PM). Agents 101 at 9:30 PM. |
-| 2 | Wed Oct 28 | `packages/meta`: Model API, Ads Graph client, WhatsApp client. Ingest + snapshot + drift. Agents 102 (verifiable agents) at 9:30 PM. |
+| 1 | Tue Oct 27 | Repo, docs, credits; Keel Bridge scaffold; API access spike (Model API, Marketing API, previews, features spec, Facebook Login app). Ask preview question in office hours (7:30 PM). Agents 101 at 9:30 PM. |
+| 2 | Wed Oct 28 | `packages/meta` against live APIs. Ingest + snapshot + drift. Agents 102 (verifiable agents) at 9:30 PM. |
 | 3 | Thu Oct 29 | Variant sources (Meta previews + fixtures). Build the 40-pair labelled eval set. |
 | 4 | Fri Oct 30 | Judge pipeline: open-weight screen, SAM 3.1 regions, Muse Spark comparison, findings schema. Eval runner v1. Fireworks session 9:30 PM. |
 | 5 | Sat Oct 31 | Rulebook drafting with Muse Wonder + feedback loop. Tune prompts against eval. |
 | 6 | Sun Nov 1 | LangGraph wiring: decide → approval interrupt → act → verify; audit log. |
-| 7 | Mon Nov 2 | WhatsApp cards + button webhooks end to end; Muse Image replacement. |
-| 8 | Tue Nov 3 | Dashboard; investigator sub-agent; deploy (API + worker + web). |
+| 7 | Mon Nov 2 | Review flow end to end on a real cycle; push alerts; Muse Image replacement. |
+| 8 | Tue Nov 3 | Keel Bridge polish; investigator sub-agent; deploy (API + worker + web). |
 | 9 | Wed Nov 4 | Final eval numbers, README, record demo, X post. Office hours now 8:30 PM IST. |
 | — | Thu Nov 5, 7:30 AM | **Submission deadline** |
 
