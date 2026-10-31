@@ -1,0 +1,39 @@
+# Keel in one command:  cp .env.example .env  (fill it in)  then  docker compose up -d --build
+# Open http://localhost:8787 (or your PUBLIC_BASE_URL).
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: keel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-keel}
+      POSTGRES_DB: keel
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keel"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://keel:${POSTGRES_PASSWORD:-keel}@db:5432/keel
+    ports: ["${PORT:-8787}:8787"]
+    volumes: [media:/data]
+    depends_on: { db: { condition: service_healthy } }
+    restart: unless-stopped
+
+  worker:
+    build: .
+    command: ["sh", "-c", "sleep 5 && npm run start:worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://keel:${POSTGRES_PASSWORD:-keel}@db:5432/keel
+    volumes: [media:/data]
+    depends_on: { db: { condition: service_healthy }, api: { condition: service_started } }
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  media:

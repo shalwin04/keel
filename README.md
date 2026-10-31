@@ -29,47 +29,65 @@ Watch ─▶ Check settings ─▶ Screen ─▶ Inspect ─▶ Investigate ─�
 
 | Screen | What it's for |
 |---|---|
-| Review | Findings sorted by severity. Drag the waterline between the approved original and what Meta served, toggle outlines of what changed, then approve, replace or leave it. Keyboard: J/K, A, R, P, M. |
-| Live trace | Each step of a check as it runs, with every model call, its tier and timing. |
-| Accounts | Health per ad account, and the enhancement lock board: current settings against approved ones, drift in red. |
+| Review | Findings sorted by severity, with a compare slider between the approved original and what Meta served. Approve, replace with an on-brand version, or keep it running. Keyboard: J/K, A, R, P, M. A "Decided" tab shows every outcome Meta confirmed. |
+| Activity | Each check step by step as it runs, with every model call, its time and cost, and every action and its verification. "Check now" per account. |
+| Ads | Every watched ad with its Advantage+ enhancements against the approved baseline; drifted settings highlighted. Per-account schedule and on/off. |
+| Rules | The brand rulebook (audience, casting, palette, tone, banned content, claim limits, enhancements to always keep off), a Muse Wonder draft from your best ads, and approval policy: what Keel may do without asking, minimum confidence, how long requests stay open. |
 | Audit log | Every check, decision and change, hash-chained and verified on load. |
-| Connect an account | Facebook Login, pick an ad account, and Muse Wonder drafts the brand rulebook from your best ads. |
+| Settings | Facebook connection and ad accounts, appearance (light/dark), review alerts on this device, people. |
 
-Alerts reach your phone as web push (install Keel Bridge as an app). Decisions come from signed-in owners and reviewers only; viewers can watch.
+Alerts reach your phone as web push (install Keel as an app). Decisions come from signed-in owners and reviewers only; viewers can watch.
 
-Details: [docs/IDEATION.md](docs/IDEATION.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/PLAN.md](docs/PLAN.md)
+## What happens when you approve
+
+| Proposal | What Keel does through the Marketing API | How it's verified |
+|---|---|---|
+| Switch it back off (setting drift) | Copies the ad's creative with the drifted enhancement set to `OPT_OUT`, swaps it into the ad | Reads the ad back: new creative is live and the enhancement is off |
+| Restore the approved creative | Same copy with every enhancement off | Same read-back |
+| Replace with an on-brand version | Muse Image regenerates the image from the approved original and the rulebook, uploads it, swaps in a creative that uses it, enhancements off | Same read-back |
+| Pause the ad | Sets the ad to `PAUSED` | Reads the status back |
+
+Creatives are immutable on Meta, so every fix is a new creative; the previous creative id is kept in the audit log. A verified fix becomes the ad's new baseline. If you keep a finding running, Keel remembers and doesn't raise the same thing again; a kept setting becomes part of the baseline.
+
+Details: [docs/IDEATION.md](docs/IDEATION.md) · [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [docs/PLAN.md](docs/PLAN.md) · [docs/DEPLOY.md](docs/DEPLOY.md)
 
 ## Repo
 
 ```
-apps/api       Hono API: sessions, Facebook Login, review queue, decisions, SSE, push
-apps/worker    scheduler running the LangGraph watch cycle
-apps/web       Keel Bridge (Vite + React + TanStack)
+apps/api       Hono API + serves the built web app: sessions, Facebook Login, review queue, decisions, rules, SSE, push
+apps/worker    scheduler: every watched account on its own interval, approval expiry, crash recovery
+apps/web       Keel Bridge (Vite + React + TanStack + Tailwind)
 packages/core  schemas, defect taxonomy, decision policy, roles
-packages/agents  LangGraph cycle, judges, rulebook drafting, runtime wiring, push
-packages/meta  Meta Model API, open-weight, SAM 3.1, Marketing API, Ads MCP clients
-packages/db    Drizzle schema, hash-chained audit log, token encryption, live events, demo seed
+packages/agents  LangGraph cycle, judges, investigator, actions + verification, scheduler, runtime wiring, push
+packages/meta  Meta Model API, open-weight, SAM 3.1, Muse Image, Marketing API, preview rendering, media store
+packages/db    Drizzle schema + migrations, hash-chained audit log, token encryption, live events, demo seed
 eval/          labelled variant pairs + precision/recall runner
-scripts/       local Postgres, demo seed
+tests/e2e      full cycle against Postgres with a fake Marketing API (drift → approve → verify → learn)
+scripts/       migrate, local Postgres, demo seed, add an account
 ```
-
-Unit tests live in a `tests/` folder beside each package's `src/` (for example `packages/agents/tests/graph.test.ts`).
 
 ## Run locally
 
 ```bash
-nvm use                       # Node 22
+nvm use                       # Node 22+
 npm install
-cp .env.example .env          # set KEEL_SECRET; Meta keys can wait
-npm run db:local              # Postgres in .data/pg, no Docker needed (leave running)
-npm run db:migrate
+cp .env.example .env          # set KEEL_SECRET and DATABASE_URL; Meta keys can wait
+npm run db:migrate            # Postgres from Docker, or `npm run db:local` for one without Docker
 npm run db:seed               # Northline demo workspace
 npm run dev:api               # :8787
-npm run dev:web               # :5173 → "Developer sign-in" or "Explore the demo workspace"
-npm run cycle:once            # one real watch cycle against META_AD_ACCOUNT_ID (needs Meta keys)
-npm test                      # unit tests
-npm run eval                  # eval set
+npm run dev:web               # :5173 → "Developer sign-in" or "Explore the demo"
+npm run dev:worker            # the scheduler (or `npm run cycle:once` for one pass over every account)
 ```
+
+```bash
+npm run check                 # typecheck + unit tests
+npm run test:e2e              # full cycle against your database with a fake Marketing API
+npm run eval                  # eval set (needs model keys)
+```
+
+## Deploy
+
+`docker compose up -d --build` runs Postgres, the API (which also serves Keel Bridge) and the worker. See [docs/DEPLOY.md](docs/DEPLOY.md) for a single VM, Railway/Render/Fly, and the Meta app settings for production.
 
 ## Built during the hackathon
 
@@ -79,6 +97,8 @@ Everything in this repository was written during the Meta Global AI Developer Ha
 |---|---|
 | Oct 27 | Product spec, architecture, scaffold, decision policy, drift detection, approval interrupt, audit chain |
 | Oct 27 | Keel Bridge: review queue with compare viewer, live trace, lock board, audit log, onboarding, Facebook Login, roles, live events, web push, demo workspace |
+| Oct 29 | First real cycle against a live ad account; per-ad baselines (edits create new creative ids) |
+| Oct 30 | Production pass: relock/revert/replace actions with read-back verification, preview rendering, tolerant SAM parsing, Muse Wonder investigator, learning from dismissals, multi-account scheduler with expiry, rulebook and policy editors, redesigned UI with dark mode, Docker + CI, end-to-end test |
 
 ## License
 

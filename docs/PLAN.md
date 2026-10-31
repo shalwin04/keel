@@ -2,34 +2,28 @@
 
 **Deadline: Thu Nov 5, 7:30 AM IST** (Wed Nov 4, 9:00 PM ET). Submission needs a public repo, a 3-minute demo video and a live product.
 
-Status as of **Tue Oct 27, 4:00 PM IST** (day 1 of 9). Approvals moved from WhatsApp to **Keel Bridge**, Keel's own web app.
+Status as of **Fri Oct 30, 7:00 PM IST** (day 4 of 9).
 
 ## Where we are
 
 | Area | Status | Notes |
 |---|---|---|
-| Product spec, architecture | Done | Updated for Keel Bridge |
-| Monorepo, tooling | Done | npm workspaces, TypeScript 7, Vitest, Drizzle, Vite; local Postgres without Docker |
-| Decision policy, roles | Done | `decide()` and `canDecide()`, tested |
-| Drift detection | Done | Tested |
-| Watch cycle graph | Done (skeleton) | 11 steps incl. notify and verify; pause/resume tested with fakes |
-| Live trace | Done | Node and model-call events → Postgres NOTIFY → SSE → browser |
-| Hash-chained audit log | Done | Verified on every audit page load |
-| Keel Bridge screens | Done (first pass) | Review with compare viewer, live trace, accounts + lock board, audit, onboarding, sign-in |
-| Auth | Done, untested live | Facebook Login for Business flow; sessions; Origin checks; dev and demo sign-in tested |
-| Web push | Done, untested on a phone | Service worker, subscribe, send; needs VAPID keys |
-| Demo workspace | Done | Seeded Northline brand; simulated decisions; reset |
-| Model API, open-weight clients | Code written, untested live | Model IDs unconfirmed |
-| SAM 3.1 segmenter | Stub | Output parser returns nothing yet |
-| Marketing API client | Code written, untested live | |
-| Variant sources | Partial | Fixtures work; Meta previews return HTML, not images |
-| Actions | Partial | Pause + verify only; relock, revert, replace not built |
-| Rulebook drafting | Code written, untested live | Muse Wonder call + onboarding screen |
-| Investigator sub-agent | Not started | |
-| Muse Image replacement | Not started | |
+| Product spec, architecture | Done | |
+| Watch cycle | Done | 11 steps; brand rulebook + policy loaded per account; per-variant failures don't stop a cycle |
+| Drift detection | Done, tested live | Baselines keyed per ad (Ads Manager edits create new creative ids) |
+| Actions | Done, tested against a fake Marketing API | Relock, revert, replace (Muse Image), pause; each verified by reading the ad back; a verified fix becomes the baseline |
+| Learning | Done | Kept findings are never re-raised; a kept setting joins the baseline; logged findings suppressed for 7 days |
+| Variant sources | Done, untested live | Meta previews rendered to PNG with Playwright; fixtures; both at once |
+| SAM 3.1 | Done, format unconfirmed | Tolerant parser (boxes in any common shape); falls back to whole-image regions; `SAM_DEBUG=1` logs the raw response |
+| Investigator | Done, untested live | Muse Wonder second look for findings in the 45–75% band |
+| Scheduler | Done | Every watched account on its own interval; approval expiry; stuck-cycle recovery |
+| Keel Bridge | Done (redesign) | Review + history, Activity, Ads, Rules (rulebook + policy editors), Audit, Settings (accounts, theme, alerts, people); light/dark; phone layout with tab bar |
+| Production server | Done | API serves the web app; env checks; security headers; rate limits; JSON logs; graceful shutdown |
+| Deploy | Ready, not deployed | Dockerfile, docker-compose, CI workflow, docs/DEPLOY.md |
+| Tests | 27 unit + 1 end-to-end | `npm run check`, `npm run test:e2e` |
+| Model IDs | Unconfirmed | Check from your Mac: `curl -H "Authorization: Bearer $META_API_KEY" https://api.meta.ai/v1/models` |
+| Eval set | Not started | Runner and format exist; `eval/fixtures` empty |
 | Voice commands | Not started | Stretch |
-| Eval set | Not started | Runner and format exist |
-| Deploy | Not started | |
 | Public GitHub repo | Not started | |
 
 ## Milestones
