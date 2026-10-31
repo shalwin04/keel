@@ -1,23 +1,60 @@
-import { createRuntime } from "@keel/agents";
+import { createRuntime, dueAccounts, sweep } from "@keel/agents";
 
+/**
+ * The scheduler. Every minute: expire overdue approvals, then start a cycle for each account whose
+ * interval has passed. `--once` runs every watched account once (or just the one given) and exits.
+ *
+ *   npm run cycle:once                 # all accounts
+ *   npm run cycle:once -- act_123      # one account
+ */
 const once = process.argv.includes("--once");
-const accountId = process.env.META_AD_ACCOUNT_ID;
-const intervalMin = Number(process.env.POLL_INTERVAL_MIN ?? 180);
-if (!accountId) throw new Error("META_AD_ACCOUNT_ID is not set");
+const only = process.argv.find((a) => a.startsWith("act_"));
+const tickMs = Number(process.env.SCHEDULER_TICK_SEC ?? 60) * 1000;
+const maxParallel = Number(process.env.MAX_PARALLEL_CYCLES ?? 2);
 
 const rt = await createRuntime();
+const log = (msg: string, extra: Record<string, unknown> = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), svc: "keel-worker", msg, ...extra }));
 
-async function tick() {
+async function runOne(accountId: string) {
   const started = Date.now();
   try {
-    const cycleId = await rt.runCycle(accountId!);
-    console.log(`cycle ${cycleId} finished or paused for approval in ${Date.now() - started} ms`);
+    const cycleId = await rt.runCycle(accountId);
+    log("cycle done", { accountId, cycleId, ms: Date.now() - started });
   } catch (err) {
-    console.error("cycle failed", err);
-    await rt.audit("keel", "cycle.error", { message: String(err) });
+    log("cycle failed", { accountId, error: String((err as Error).message ?? err) });
+    await rt.audit("keel", "cycle.error", { accountId, message: String((err as Error).message ?? err) }).catch(() => {});
   }
 }
 
-await tick();
-if (once) await rt.close();
-else setInterval(tick, intervalMin * 60_000);
+async function runAll(ids: string[]) {
+  for (let i = 0; i < ids.length; i += maxParallel) await Promise.all(ids.slice(i, i + maxParallel).map(runOne));
+}
+
+if (once) {
+  await sweep(rt);
+  const ids = only ? [only] : await dueAccounts(rt, new Date(8.64e15));
+  if (!ids.length) log("no accounts to check (run `npm run account:add` or connect one in Keel Bridge)");
+  await runAll(ids);
+  await rt.close();
+} else {
+  let busy = false;
+  const tick = async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const { expired } = await sweep(rt);
+      if (expired) log("approvals expired", { count: expired });
+      await runAll(only ? [only] : await dueAccounts(rt));
+    } catch (err) {
+      log("tick failed", { error: String(err) });
+    } finally {
+      busy = false;
+    }
+  };
+  log("scheduler started", { tickSec: tickMs / 1000, maxParallel });
+  await tick();
+  const timer = setInterval(tick, tickMs);
+  const stop = async () => { clearInterval(timer); log("shutting down"); await rt.close(); process.exit(0); };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+}

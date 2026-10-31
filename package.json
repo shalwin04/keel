@@ -6,7 +6,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.9"
   },
   "workspaces": [
     "apps/*",
@@ -21,9 +21,15 @@
     "cycle:once": "npm run once -w @keel/worker",
     "eval": "tsx eval/run.ts",
     "db:generate": "drizzle-kit generate --config packages/db/drizzle.config.ts",
-    "db:migrate": "drizzle-kit migrate --config packages/db/drizzle.config.ts",
+    "db:migrate": "tsx --env-file-if-exists=.env scripts/migrate.ts",
     "db:local": "tsx scripts/db-local.ts",
-    "db:seed": "tsx --env-file=.env scripts/seed.ts"
+    "db:seed": "tsx --env-file-if-exists=.env scripts/seed.ts",
+    "account:add": "tsx --env-file-if-exists=.env scripts/add-account.ts",
+    "test:e2e": "tsx --env-file-if-exists=.env tests/e2e/cycle.e2e.ts",
+    "build": "npm run build -w @keel/web",
+    "start:api": "npm run start -w @keel/api",
+    "start:worker": "npm run start -w @keel/worker",
+    "check": "npm run typecheck && npm test"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

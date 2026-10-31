@@ -1,5 +1,5 @@
 import { END, START, StateGraph, interrupt, isGraphBubbleUp, type BaseCheckpointSaver } from "@langchain/langgraph";
-import { decide, type Approval, type BrandPolicy, type Finding } from "@keel/core";
+import { DEFAULT_POLICY, decide, type Approval, type BrandPolicy, type Finding } from "@keel/core";
 import type { KeelDeps } from "./deps.ts";
 import { diffFeatures } from "./drift.ts";
 import { CycleState, type CycleStateT } from "./state.ts";
@@ -40,26 +40,30 @@ export function buildCycleGraph(deps: KeelDeps, policy?: BrandPolicy, checkpoint
 
   const ingest: NodeFn = async (s) => {
     await emit("cycle_start", { accountId: s.accountId });
+    const brand = await deps.loadBrand?.(s.accountId);
     const snapshots = await deps.snapshotAccount(s.accountId);
     await deps.recordSnapshots?.(s.cycleId, s.accountId, snapshots);
-    await deps.audit("keel", "cycle.ingested", { cycleId: s.cycleId, ads: snapshots.length });
-    return { snapshots };
+    await deps.audit("keel", "cycle.ingested", { cycleId: s.cycleId, ads: snapshots.length, variants: snapshots.reduce((n, x) => n + x.variants.length, 0) });
+    return { snapshots, rulebook: brand?.rulebook ?? s.rulebook, policy: brand?.policy };
   };
 
   const detectDrift: NodeFn = async (s) => {
     const findings: Finding[] = [];
     for (const snap of s.snapshots) {
-      const baseline = await deps.getBaseline(snap.creativeId);
-      findings.push(...diffFeatures(snap.adId, baseline, snap.featuresSpec, s.rulebook?.lockedEnhancements));
+      const baseline = await deps.getBaseline(snap.creativeId, snap.adId);
+      findings.push(...diffFeatures(snap.adId, baseline, snap.featuresSpec, s.rulebook?.lockedEnhancements).map((f) => ({ ...f, originalRef: snap.originalImageRef })));
     }
     return { findings };
   };
 
   const screen: NodeFn = async (s) => {
     const screens = await Promise.all(
-      s.snapshots.flatMap((snap) => snap.variants.map((v) => deps.screen(snap, v, s.rulebook))),
+      s.snapshots.flatMap((snap) => snap.variants.map(async (v) => {
+        try { return await deps.screen(snap, v, s.rulebook); }
+        catch (err) { await emit("error", { message: `screen ${v.id}: ${(err as Error).message}` }); return undefined; }
+      })),
     );
-    return { screens };
+    return { screens: screens.filter((x): x is NonNullable<typeof x> => !!x) };
   };
 
   const inspect: NodeFn = async (s) => {
@@ -67,7 +71,9 @@ export function buildCycleGraph(deps: KeelDeps, policy?: BrandPolicy, checkpoint
     for (const r of s.screens.filter((x) => x.score >= threshold)) {
       const snap = s.snapshots.find((x) => x.variants.some((v) => v.id === r.variantId));
       const variant = snap?.variants.find((v) => v.id === r.variantId);
-      if (snap && variant) findings.push(...(await deps.inspect(snap, variant, r, s.rulebook)));
+      if (!snap || !variant) continue;
+      try { findings.push(...(await deps.inspect(snap, variant, r, s.rulebook))); }
+      catch (err) { await emit("error", { message: `inspect ${variant.id}: ${(err as Error).message}` }); }
     }
     return { findings };
   };
@@ -78,14 +84,16 @@ export function buildCycleGraph(deps: KeelDeps, policy?: BrandPolicy, checkpoint
     for (const f of s.findings) {
       const ambiguous = f.detectedBy === "inspect" && f.confidence >= ambLo && f.confidence <= ambHi;
       const snap = s.snapshots.find((x) => x.adId === f.adId);
-      resolved.push(ambiguous && snap ? await deps.investigate(f, snap, s.rulebook) : f);
+      if (!ambiguous || !snap) { resolved.push(f); continue; }
+      try { resolved.push(await deps.investigate(f, snap, s.rulebook)); }
+      catch (err) { await emit("error", { message: `investigation skipped: ${(err as Error).message}` }); resolved.push(f); }
     }
     return { resolved };
   };
 
   const decideNode: NodeFn = async (s) => {
-    const findings = findingsOf(s);
-    const proposals = decide(findings, s.rulebook, policy);
+    const findings = (await deps.filterFindings?.(s.accountId, findingsOf(s))) ?? findingsOf(s);
+    const proposals = decide(findings, s.rulebook, { ...DEFAULT_POLICY, ...policy, ...s.policy });
     await deps.recordDecisions?.(s.cycleId, s.accountId, findings, proposals);
     for (const f of findings) await emit("finding", { id: f.id, adId: f.adId, code: f.code, severity: f.severity, confidence: f.confidence, summary: f.summary });
     for (const p of proposals) await emit("proposal", { id: p.id, adId: p.adId, action: p.action, requiresApproval: p.requiresApproval });
@@ -120,9 +128,17 @@ export function buildCycleGraph(deps: KeelDeps, policy?: BrandPolicy, checkpoint
     for (const p of s.proposals.filter((x) => x.action !== "LOG")) {
       const approval = s.approvals.find((a) => a.proposalId === p.id);
       if (p.requiresApproval && approval?.decision !== "approve" && approval?.decision !== "replace") continue;
-      const result = await deps.execute(p, approval);
+      const findings = findingsOf(s).filter((f) => p.findingIds.includes(f.id));
+      let result;
+      try {
+        result = await deps.execute(p, approval, { snapshot: s.snapshots.find((x) => x.adId === p.adId), findings, rulebook: s.rulebook });
+      } catch (err) {
+        result = { ok: false, detail: (err as Error).message };
+      }
+      result = { ...result, data: { ...(result.data ?? {}), by: approval?.decidedBy ?? "keel" } };
       executed.push({ proposalId: p.id, ...result });
-      await emit("action", { proposalId: p.id, action: p.action, ...result });
+      await deps.audit(approval?.decidedBy ?? "keel", result.ok ? "action.executed" : "action.failed", { proposalId: p.id, action: approval?.decision === "replace" ? "REPLACE_CREATIVE" : p.action, adId: p.adId, detail: result.detail, ...(result.data ?? {}) });
+      await emit("action", { proposalId: p.id, action: p.action, ok: result.ok, detail: result.detail });
     }
     return { executed };
   };
@@ -131,7 +147,11 @@ export function buildCycleGraph(deps: KeelDeps, policy?: BrandPolicy, checkpoint
     const verified: CycleStateT["verified"] = [];
     for (const e of s.executed.filter((x) => x.ok)) {
       const p = s.proposals.find((x) => x.id === e.proposalId);
-      const result = p && deps.verify ? await deps.verify(p) : { ok: true, detail: "no verifier configured" };
+      let result = { ok: true, detail: "no verifier configured" };
+      if (p && deps.verify) {
+        try { result = await deps.verify(p, e); } catch (err) { result = { ok: false, detail: (err as Error).message }; }
+      }
+      await emit("action", { proposalId: e.proposalId, action: p?.action, phase: "verify", ...result });
       verified.push({ proposalId: e.proposalId, ...result });
       await deps.audit("keel", result.ok ? "action.verified" : "action.verify_failed", { proposalId: e.proposalId, detail: result.detail });
     }
@@ -139,7 +159,12 @@ export function buildCycleGraph(deps: KeelDeps, policy?: BrandPolicy, checkpoint
   };
 
   const learn: NodeFn = async (s) => {
-    await deps.recordFeedback?.(findingsOf(s), s.approvals);
+    const outcomes = s.proposals.map((p) => ({
+      proposalId: p.id,
+      executed: s.executed.find((x) => x.proposalId === p.id),
+      verified: s.verified.find((x) => x.proposalId === p.id),
+    }));
+    await deps.recordFeedback?.({ findings: findingsOf(s), proposals: s.proposals, approvals: s.approvals, outcomes, snapshots: s.snapshots });
     await deps.audit("keel", "cycle.completed", { cycleId: s.cycleId, findings: findingsOf(s).length, executed: s.executed.length });
     await emit("cycle_end", { findings: findingsOf(s).length, proposals: s.proposals.length, executed: s.executed.length });
     return {};

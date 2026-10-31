@@ -9,7 +9,7 @@ import type { AppEnv, SessionUser } from "./env.ts";
 const SESSION_COOKIE = "keel_session";
 const STATE_COOKIE = "keel_oauth_state";
 const SESSION_DAYS = 14;
-const secret = () => process.env.KEEL_SECRET ?? "dev-only-secret";
+const secret = () => process.env.KEEL_SECRET ?? "dev-only-secret-change-me-0000000000";
 const secure = () => (process.env.PUBLIC_BASE_URL ?? "").startsWith("https://");
 const webUrl = (path = "/") => `${process.env.WEB_BASE_URL ?? "http://localhost:5173"}${path}`;
 
@@ -50,7 +50,15 @@ export function authRoutes(db: Db) {
   const r = new Hono<AppEnv>();
   const redirectUri = () => `${process.env.PUBLIC_BASE_URL}/auth/meta/callback`;
 
+  /** Which sign-in options this deployment offers (the login page shows only these). */
+  r.get("/options", (c) => c.json({
+    facebook: Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET && process.env.META_LOGIN_CONFIG_ID),
+    demo: process.env.DEMO_ENABLED === "1",
+    dev: process.env.DEV_AUTH === "1",
+  }));
+
   r.get("/meta/start", async (c) => {
+    if (!process.env.META_APP_ID || !process.env.META_LOGIN_CONFIG_ID) return c.redirect(webUrl("/login?error=facebook-not-configured"));
     const state = randomBytes(16).toString("base64url");
     await setSignedCookie(c, STATE_COOKIE, state, secret(), { httpOnly: true, sameSite: "Lax", secure: secure(), path: "/", maxAge: 600 });
     const url = new URL(`https://www.facebook.com/${config.graph.version}/dialog/oauth`);
@@ -68,6 +76,7 @@ export function authRoutes(db: Db) {
     deleteCookie(c, STATE_COOKIE, { path: "/" });
     if (!code || !state || state !== expected) return c.redirect(webUrl("/login?error=state"));
 
+    try {
     const short = await graph<{ access_token: string }>("oauth/access_token", {
       client_id: config.facebook.appId, client_secret: config.facebook.appSecret, redirect_uri: redirectUri(), code,
     });
@@ -85,8 +94,16 @@ export function authRoutes(db: Db) {
       await db.insert(schema.workspaces).values({ id: workspaceId, name: `${me.name.split(" ")[0]}'s workspace` });
       await db.insert(schema.memberships).values({ workspaceId, userId: user!.id, role: "owner" });
     } else {
-      const [m] = await db.select().from(schema.memberships).where(and(eq(schema.memberships.userId, user.id), eq(schema.memberships.role, "owner")));
-      workspaceId = m?.workspaceId ?? DEMO_WORKSPACE_ID;
+      const owned = await db.select({ workspaceId: schema.memberships.workspaceId, isDemo: schema.workspaces.isDemo })
+        .from(schema.memberships).innerJoin(schema.workspaces, eq(schema.workspaces.id, schema.memberships.workspaceId))
+        .where(and(eq(schema.memberships.userId, user.id), eq(schema.memberships.role, "owner")));
+      const own = owned.find((m) => !m.isDemo);
+      if (own) workspaceId = own.workspaceId;
+      else {
+        workspaceId = randomUUID();
+        await db.insert(schema.workspaces).values({ id: workspaceId, name: `${me.name.split(" ")[0]}'s workspace` });
+        await db.insert(schema.memberships).values({ workspaceId, userId: user.id, role: "owner" });
+      }
     }
     await db.insert(schema.metaConnections).values({
       id: randomUUID(), workspaceId, userId: user!.id, tokenEnc: encrypt(long.access_token), scopes: [],
@@ -94,6 +111,10 @@ export function authRoutes(db: Db) {
     });
     await startSession(c, db, user!.id);
     return c.redirect(webUrl("/onboarding"));
+    } catch (err) {
+      console.error("[keel] facebook login failed", err);
+      return c.redirect(webUrl(`/login?error=${encodeURIComponent((err as Error).message.slice(0, 120))}`));
+    }
   });
 
   /** Read-only tour of the seeded demo workspace, for judges. */

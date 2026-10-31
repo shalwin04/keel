@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { FeaturesSpec, Finding } from "@keel/core";
 
-const isOn = (v: string | undefined) => v === "OPT_IN" || v === "DEFAULT_OPT_IN";
+export const isOn = (v: string | undefined) => v === "OPT_IN" || v === "DEFAULT_OPT_IN";
 
 /** Any enhancement that is on now but wasn't in the approved baseline (or is locked by the rulebook). */
 export function diffFeatures(
@@ -30,3 +30,10 @@ export function diffFeatures(
   }
   return out;
 }
+
+/** The enhancement a SETTING_DRIFT finding is about. */
+export const driftedFeature = (f: Finding) => f.evidence.find((e) => e.startsWith("creative_features_spec."))?.slice("creative_features_spec.".length);
+
+/** Stable identity for "the same problem on the same ad", used to remember dismissals across cycles. */
+export const findingKey = (f: Pick<Finding, "adId" | "code" | "variantId" | "evidence">) =>
+  `${f.adId}|${f.code}|${f.variantId ?? f.evidence[0] ?? ""}`;

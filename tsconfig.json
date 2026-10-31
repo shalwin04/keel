@@ -7,6 +7,7 @@
     "apps/*/tests",
     "packages/db/drizzle.config.ts",
     "eval/*.ts",
-    "scripts/*.ts"
+    "scripts/*.ts",
+    "tests/**/*.ts"
   ]
 }

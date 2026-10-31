@@ -1,4 +1,4 @@
-import { bigserial, boolean, integer, jsonb, pgTable, primaryKey, real, text, timestamp } from "drizzle-orm/pg-core";
+import { bigserial, boolean, index, integer, jsonb, pgTable, primaryKey, real, text, timestamp } from "drizzle-orm/pg-core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true });
 
@@ -68,6 +68,9 @@ export const adAccounts = pgTable("ad_accounts", {
   name: text("name").notNull(),
   connectionId: text("connection_id"),
   pollIntervalMin: integer("poll_interval_min").default(180).notNull(),
+  /** Off = Keel stops watching this account (data is kept). */
+  watching: boolean("watching").default(true).notNull(),
+  createdAt: ts("created_at").defaultNow().notNull(),
 });
 
 export const rulebooks = pgTable("rulebooks", {
@@ -94,10 +97,11 @@ export const creativeBaselines = pgTable("creative_baselines", {
 export const cycles = pgTable("cycles", {
   id: text("id").primaryKey(),
   accountId: text("account_id").notNull(),
-  status: text("status").notNull(), // running | awaiting_approval | completed | failed
+  status: text("status").notNull(), // running | awaiting_approval | completed | failed | expired
   startedAt: ts("started_at").defaultNow().notNull(),
   endedAt: ts("ended_at"),
-});
+  error: text("error"),
+}, (t) => [index("cycles_account_idx").on(t.accountId, t.startedAt)]);
 
 export const snapshots = pgTable("snapshots", {
   id: text("id").primaryKey(),
@@ -111,7 +115,7 @@ export const snapshots = pgTable("snapshots", {
   featuresSpec: jsonb("features_spec").notNull(),
   variants: jsonb("variants").notNull(),
   takenAt: ts("taken_at").defaultNow().notNull(),
-});
+}, (t) => [index("snapshots_account_idx").on(t.accountId, t.takenAt), index("snapshots_ad_idx").on(t.adId)]);
 
 export const findings = pgTable("findings", {
   id: text("id").primaryKey(),
@@ -128,9 +132,9 @@ export const findings = pgTable("findings", {
   detectedBy: text("detected_by").notNull(),
   originalRef: text("original_ref"),
   variantRef: text("variant_ref"),
-  status: text("status").default("open").notNull(), // open | resolved | dismissed
+  status: text("status").default("open").notNull(), // open | resolved | dismissed | logged
   createdAt: ts("created_at").defaultNow().notNull(),
-});
+}, (t) => [index("findings_account_idx").on(t.accountId, t.status), index("findings_ad_idx").on(t.adId)]);
 
 export const proposals = pgTable("proposals", {
   id: text("id").primaryKey(),
@@ -141,10 +145,12 @@ export const proposals = pgTable("proposals", {
   action: text("action").notNull(),
   reason: text("reason").notNull(),
   requiresApproval: boolean("requires_approval").notNull(),
-  status: text("status").default("pending").notNull(), // pending | approved | rejected | replaced | expired | executed
+  status: text("status").default("pending").notNull(), // pending | deciding | approved | rejected | expired | stale | executed | failed | logged
+  /** What happened when the approved action ran: { executed, verified }. */
+  outcome: jsonb("outcome"),
   expiresAt: ts("expires_at").notNull(),
   createdAt: ts("created_at").defaultNow().notNull(),
-});
+}, (t) => [index("proposals_account_idx").on(t.accountId, t.status), index("proposals_cycle_idx").on(t.cycleId)]);
 
 export const approvals = pgTable("approvals", {
   id: text("id").primaryKey(),
@@ -164,7 +170,7 @@ export const traceEvents = pgTable("trace_events", {
   node: text("node"),
   at: ts("at").notNull(),
   data: jsonb("data").notNull(),
-});
+}, (t) => [index("trace_cycle_idx").on(t.cycleId, t.seq)]);
 
 export const auditLog = pgTable("audit_log", {
   seq: bigserial("seq", { mode: "number" }).primaryKey(),

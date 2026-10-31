@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "tsx watch --env-file=../../.env src/index.ts",
-    "once": "tsx --env-file=../../.env src/index.ts --once"
+    "dev": "tsx watch --env-file-if-exists=../../.env src/index.ts",
+    "once": "tsx --env-file-if-exists=../../.env src/index.ts --once",
+    "start": "tsx src/index.ts"
   },
   "dependencies": {
     "@keel/agents": "*"

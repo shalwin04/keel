@@ -2,18 +2,19 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { DEFAULT_SEVERITY, DefectCodeSchema, ScreenResultSchema, type AdSnapshot, type Finding, type Rulebook, type ScreenResult, type Variant } from "@keel/core";
 import { callJson, config, metaClient, openWeightClient, type ImageInput, type ModelCallInfo, type Segmenter } from "@keel/meta";
-import { INSPECT_SYSTEM, SCREEN_SYSTEM, SEGMENT_CONCEPTS, rulebookBlock } from "./prompts.ts";
+import { INSPECT_SYSTEM, INVESTIGATE_SYSTEM, SCREEN_SYSTEM, SEGMENT_CONCEPTS, rulebookBlock } from "./prompts.ts";
 
 export type LoadImage = (ref: string) => Promise<ImageInput>;
-export type OnModelCall = (info: ModelCallInfo & { tier: "screen" | "inspect" | "segment" }) => void;
+export type OnModelCall = (info: ModelCallInfo & { tier: "screen" | "inspect" | "segment" | "investigate" | "image" }) => void;
 
 /** Tier 1: open-weight screen on every variant (Muse Spark Open / Glimmer). */
 export function makeScreen(load: LoadImage, onCall?: OnModelCall) {
   return async (snap: AdSnapshot, v: Variant, rulebook?: Rulebook): Promise<ScreenResult> => {
     const images = [await load(snap.originalImageRef ?? ""), await load(v.imageRef)];
     return callJson({
-      client: openWeightClient(),
-      model: config.openWeight.model,
+      // Open-weight tier when configured; otherwise the hosted Muse Spark does the first pass too.
+      client: process.env.OPENWEIGHT_API_KEY ? openWeightClient() : metaClient(),
+      model: process.env.OPENWEIGHT_API_KEY ? config.openWeight.model : config.models.spark,
       system: SCREEN_SYSTEM,
       text: `variantId: ${v.id}\nPlacement: ${v.placement}\nAd copy: ${snap.primaryText ?? "(none)"}\n${rulebookBlock(rulebook)}\nImage 1 = APPROVED ORIGINAL, Image 2 = VARIANT.`,
       images,
@@ -74,5 +75,43 @@ export function makeInspect(load: LoadImage, segmenter: Segmenter, onCall?: OnMo
       originalRef: snap.originalImageRef,
       variantRef: v.imageRef,
     }));
+  };
+}
+
+const InvestigateOut = z.object({
+  verdict: z.enum(["confirm", "dismiss", "adjust"]),
+  confidence: z.number().min(0).max(1),
+  code: DefectCodeSchema.optional(),
+  summary: z.string().optional(),
+  reasoning: z.string().default(""),
+});
+
+/** Tier 3: Muse Wonder takes a second, slower look at findings the inspector was unsure about. */
+export function makeInvestigate(load: LoadImage, onCall?: OnModelCall) {
+  return async (f: Finding, snap: AdSnapshot, rulebook?: Rulebook): Promise<Finding> => {
+    const images = [await load(f.originalRef ?? snap.originalImageRef ?? ""), ...(f.variantRef ? [await load(f.variantRef)] : [])];
+    const out = await callJson({
+      client: metaClient(),
+      model: config.models.wonder,
+      system: INVESTIGATE_SYSTEM,
+      text: [
+        `Draft finding: ${JSON.stringify({ code: f.code, summary: f.summary, evidence: f.evidence, confidence: f.confidence })}`,
+        `Ad copy: ${snap.primaryText ?? "(none)"}`,
+        rulebookBlock(rulebook),
+        "Image 1 = APPROVED ORIGINAL, Image 2 = VARIANT.",
+      ].join("\n"),
+      images,
+      schema: InvestigateOut,
+      reasoningEffort: "high",
+      onCall: (i) => onCall?.({ ...i, tier: "investigate" }),
+    });
+    if (out.verdict === "dismiss") return { ...f, confidence: Math.min(f.confidence, 1 - out.confidence), detectedBy: "investigate", evidence: [...f.evidence, `investigator: ${out.reasoning}`] };
+    const code = out.verdict === "adjust" && out.code ? out.code : f.code;
+    return {
+      ...f, code, severity: code === f.code ? f.severity : DEFAULT_SEVERITY[code],
+      summary: out.verdict === "adjust" && out.summary ? out.summary : f.summary,
+      confidence: out.confidence, detectedBy: "investigate",
+      evidence: [...f.evidence, `investigator: ${out.reasoning}`],
+    };
   };
 }

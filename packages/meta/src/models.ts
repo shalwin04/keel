@@ -83,3 +83,30 @@ function safeJson(s: string): unknown {
   const m = s.match(/\{[\s\S]*\}/);
   try { return JSON.parse(m ? m[0] : s); } catch { return undefined; }
 }
+
+/**
+ * Muse Image: an on-brand replacement image, conditioned on the approved original (and up to 9 more references).
+ * Uses the OpenAI-compatible images endpoint; returns PNG/JPEG bytes.
+ */
+export async function generateImage(o: { prompt: string; references: ImageInput[]; size?: string; onCall?: (i: ModelCallInfo) => void }): Promise<Buffer> {
+  const t0 = Date.now();
+  const res = await fetch(`${config.metaApiBase}/images/generations`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.metaApiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: config.models.image,
+      prompt: o.prompt,
+      size: o.size ?? "1024x1024",
+      n: 1,
+      response_format: "b64_json",
+      reference_images: o.references.slice(0, 10).map((r) => ("url" in r ? r.url : r.dataUrl)),
+    }),
+  });
+  if (!res.ok) throw new Error(`Muse Image ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const json = (await res.json()) as { data?: { b64_json?: string; url?: string }[] };
+  o.onCall?.({ model: config.models.image, ms: Date.now() - t0 });
+  const first = json.data?.[0];
+  if (first?.b64_json) return Buffer.from(first.b64_json, "base64");
+  if (first?.url) return Buffer.from(await (await fetch(first.url)).arrayBuffer());
+  throw new Error("Muse Image returned no image");
+}
