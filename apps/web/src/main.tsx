@@ -7,6 +7,9 @@ import { ToastProvider } from "./components/Toast.tsx";
 import { Activity } from "./pages/Activity.tsx";
 import { Ads } from "./pages/Ads.tsx";
 import { Audit } from "./pages/Audit.tsx";
+import { Create, NewCampaign } from "./pages/Create.tsx";
+import { Editor } from "./pages/Editor.tsx";
+import { Project } from "./pages/Project.tsx";
 import { Login } from "./pages/Login.tsx";
 import { Onboarding } from "./pages/Onboarding.tsx";
 import { Review } from "./pages/Review.tsx";
@@ -31,6 +34,16 @@ const adsRoute = createRoute({ getParentRoute: () => shellRoute, path: "/ads", c
 const rulesRoute = createRoute({ getParentRoute: () => shellRoute, path: "/rules", component: Rules });
 const auditRoute = createRoute({ getParentRoute: () => shellRoute, path: "/audit", component: Audit });
 const settingsRoute = createRoute({ getParentRoute: () => shellRoute, path: "/settings", component: Settings });
+const createRoute_ = createRoute({ getParentRoute: () => shellRoute, path: "/create", component: Create });
+const newCampaignRoute = createRoute({ getParentRoute: () => shellRoute, path: "/create/new", component: NewCampaign });
+const projectRoute = createRoute({
+  getParentRoute: () => shellRoute, path: "/create/$id",
+  component: function ProjectPage() { const { id } = projectRoute.useParams(); return <Project id={id} />; },
+});
+const editorRoute = createRoute({
+  getParentRoute: () => shellRoute, path: "/create/$id/edit/$designId",
+  component: function EditorPage() { const { id, designId } = editorRoute.useParams(); return <Editor id={id} designId={designId} />; },
+});
 const onboardingRoute = createRoute({ getParentRoute: () => shellRoute, path: "/onboarding", component: Onboarding });
 // Old links keep working.
 const traceRedirect = createRoute({ getParentRoute: () => rootRoute, path: "/trace", beforeLoad: () => { throw redirect({ to: "/activity" }); } });
@@ -39,7 +52,7 @@ const accountsRedirect = createRoute({ getParentRoute: () => rootRoute, path: "/
 const router = createRouter({
   routeTree: rootRoute.addChildren([
     loginRoute, traceRedirect, accountsRedirect,
-    shellRoute.addChildren([reviewRoute, reviewItemRoute, activityRoute, adsRoute, rulesRoute, auditRoute, settingsRoute, onboardingRoute]),
+    shellRoute.addChildren([createRoute_, newCampaignRoute, projectRoute, editorRoute, reviewRoute, reviewItemRoute, activityRoute, adsRoute, rulesRoute, auditRoute, settingsRoute, onboardingRoute]),
   ]),
   defaultPreload: "intent",
 });

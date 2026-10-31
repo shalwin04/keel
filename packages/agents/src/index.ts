@@ -10,3 +10,5 @@ export * from "./push.ts";
 export * from "./runtime.ts";
 export * from "./actions.ts";
 export * from "./scheduler.ts";
+export * from "./studio/models.ts";
+export * from "./studio/pipeline.ts";

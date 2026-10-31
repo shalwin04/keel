@@ -29,7 +29,9 @@
     "build": "npm run build -w @keel/web",
     "start:api": "npm run start -w @keel/api",
     "start:worker": "npm run start -w @keel/worker",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "studio:probe": "tsx --env-file-if-exists=.env scripts/studio-probe.ts",
+    "test:e2e:studio": "tsx --env-file-if-exists=.env tests/e2e/studio.e2e.ts"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

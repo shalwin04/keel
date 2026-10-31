@@ -12,7 +12,17 @@ export const mediaDir = () => resolve(process.env.MEDIA_DIR ?? join(REPO_ROOT, "
 const EXT: Record<string, string> = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif", "image/svg+xml": ".svg" };
 export const MIME: Record<string, string> = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml" };
 
+/** The real format of image bytes (Muse Image returns WebP even when asked for PNG). */
+export function sniffExt(b: Buffer): string | undefined {
+  if (b.subarray(0, 4).toString("hex") === "89504e47") return ".png";
+  if (b.subarray(0, 3).toString("hex") === "ffd8ff") return ".jpg";
+  if (b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP") return ".webp";
+  if (b.subarray(0, 4).toString("ascii") === "GIF8") return ".gif";
+  return undefined;
+}
+
 export async function saveMedia(bytes: Buffer, ext = ".png", folder = "captured"): Promise<string> {
+  ext = sniffExt(bytes) ?? ext;
   const hash = createHash("sha256").update(bytes).digest("hex").slice(0, 32);
   const dir = join(mediaDir(), folder);
   await mkdir(dir, { recursive: true });

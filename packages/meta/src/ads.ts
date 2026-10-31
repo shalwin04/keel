@@ -175,33 +175,81 @@ export class AdsGraphClient {
       if (o.imageHash) throw new GraphError("adcreatives", "this ad uses an existing post, so its image can't be replaced");
       params.object_story_id = postId;
     }
-    // Meta rejects some feature keys it reports (retired or not valid for this format). Drop the known ones,
-    // then any key Meta blames, and retry; every key we do send is explicit so nothing silently defaults on.
-    let features = Object.fromEntries(Object.entries(o.features).filter(([k, v]) => !UNWRITABLE_FEATURES.has(k) && (v === "OPT_IN" || v === "OPT_OUT")));
+    return this.postCreative(accountId, params, o.features, JSON.stringify({ ...source, degrees_of_freedom_spec: undefined }));
+  }
+
+  /**
+   * Posts a creative with explicit enhancement switches. Meta rejects some keys it reports (retired, or not
+   * valid for this format): known ones are dropped, then any key Meta blames, then a minimal set.
+   */
+  async postCreative(accountId: string, params: Record<string, unknown>, wanted: FeaturesSpec, debugSource?: string): Promise<string> {
+    let features = Object.fromEntries(Object.entries(wanted).filter(([k, v]) => !UNWRITABLE_FEATURES.has(k) && (v === "OPT_IN" || v === "OPT_OUT")));
     for (let attempt = 0; attempt < 4; attempt++) {
       const body = { ...params, degrees_of_freedom_spec: { creative_features_spec: Object.fromEntries(Object.entries(features).map(([k, v]) => [k, { enroll_status: v }])) } };
       try {
         return (await this.req<{ id: string }>(`${accountId}/adcreatives`, { method: "POST", params: body })).id;
       } catch (err) {
-        if (attempt === 0 && process.env.KEEL_DEBUG_GRAPH !== "0") {
-          console.warn(`[keel] creative copy rejected: ${(err as Error).message}\n[keel] source creative: ${JSON.stringify({ ...source, degrees_of_freedom_spec: undefined }).slice(0, 3000)}`);
+        if (attempt === 0 && debugSource && process.env.KEEL_DEBUG_GRAPH !== "0") {
+          console.warn(`[keel] creative rejected: ${(err as Error).message}\n[keel] source creative: ${debugSource.slice(0, 3000)}`);
         }
         if (err instanceof GraphError && err.subcode === 1885183) {
-          throw new GraphError("adcreatives", "Meta only lets apps in Live mode create ad creatives. Switch the Keel app to Live in developers.facebook.com (App settings → Basic, then the App mode toggle), then approve again. Pausing works in either mode.", err.code, err.status, err.subcode);
+          throw new GraphError("adcreatives", "Meta only lets apps in Live mode create ad creatives. Switch the Keel app to Live in developers.facebook.com (App settings → Basic, then the App mode toggle), then try again. Pausing works in either mode.", err.code, err.status, err.subcode);
         }
         if (!(err instanceof GraphError) || err.code !== 100) throw err;
         // A missing story field isn't about features: retrying with fewer switches won't help.
         if (err.blame.some((b) => !b.includes("creative_features_spec") && !b.includes("degrees_of_freedom"))) throw err;
         const blamed = Object.keys(features).filter((k) => err.blame.some((b) => b.includes(k)) || err.message.includes(k));
         if (blamed.length) { features = Object.fromEntries(Object.entries(features).filter(([k]) => !blamed.includes(k))); continue; }
-        // Unhelpful "Invalid parameter": keep only the switches that matter (what we turn off + what was approved on).
-        const minimal = Object.fromEntries(Object.entries(features).filter(([k, v]) => v === "OPT_OUT" ? k in o.features : true));
-        if (attempt === 0 && Object.keys(minimal).length < Object.keys(features).length) { features = minimal; continue; }
-        if (attempt <= 1) { features = Object.fromEntries(Object.entries(features).filter(([, v]) => v === "OPT_OUT")); continue; }
+        if (attempt <= 1 && Object.values(features).some((v) => v === "OPT_IN")) { features = Object.fromEntries(Object.entries(features).filter(([, v]) => v === "OPT_OUT")); continue; }
+        if (attempt <= 2 && Object.keys(features).length) { features = {}; continue; }
         throw err;
       }
     }
     throw new GraphError("adcreatives", "Meta kept rejecting the creative's enhancement settings");
+  }
+
+  // ── Studio launch: campaign → ad set → creative → ad, all created PAUSED ─────
+
+  async promotePages(accountId: string) {
+    const res = await this.req<{ data: { id: string; name: string }[] }>(`${accountId}/promote_pages`, { params: { fields: "id,name", limit: "50" } });
+    return res.data;
+  }
+
+  /** Posts, dropping optional fields Meta says it doesn't accept on this API version. */
+  private async postTolerant<T>(path: string, params: Record<string, unknown>, optional: string[]): Promise<T> {
+    let p = { ...params };
+    for (let attempt = 0; attempt <= optional.length; attempt++) {
+      try {
+        return await this.req<T>(path, { method: "POST", params: p });
+      } catch (err) {
+        if (!(err instanceof GraphError)) throw err;
+        const drop = optional.find((k) => k in p && (err.blame.some((b) => b.includes(k)) || err.message.includes(k)));
+        if (!drop) throw err;
+        const { [drop]: _, ...rest } = p;
+        p = rest;
+      }
+    }
+    throw new GraphError(path, "could not satisfy Meta's required fields");
+  }
+
+  createCampaign(accountId: string, name: string) {
+    return this.postTolerant<{ id: string }>(`${accountId}/campaigns`, {
+      name, objective: "OUTCOME_TRAFFIC", status: "PAUSED", special_ad_categories: [], is_adset_budget_sharing_enabled: false, buying_type: "AUCTION",
+    }, ["is_adset_budget_sharing_enabled", "buying_type"]);
+  }
+
+  createAdSet(accountId: string, o: { campaignId: string; name: string; dailyBudgetMinor: number; countries: string[]; ageMin: number; ageMax: number; start: string; end: string }) {
+    return this.postTolerant<{ id: string }>(`${accountId}/adsets`, {
+      name: o.name, campaign_id: o.campaignId, status: "PAUSED",
+      daily_budget: Math.round(o.dailyBudgetMinor), billing_event: "IMPRESSIONS", optimization_goal: "LINK_CLICKS",
+      bid_strategy: "LOWEST_COST_WITHOUT_CAP", destination_type: "WEBSITE",
+      targeting: { geo_locations: { countries: o.countries }, age_min: o.ageMin, age_max: o.ageMax, targeting_automation: { advantage_audience: 0 } },
+      start_time: o.start, end_time: o.end,
+    }, ["destination_type", "bid_strategy"]);
+  }
+
+  createAd(accountId: string, o: { adsetId: string; creativeId: string; name: string }) {
+    return this.req<{ id: string }>(`${accountId}/ads`, { method: "POST", params: { name: o.name, adset_id: o.adsetId, creative: { creative_id: o.creativeId }, status: "PAUSED" } });
   }
 
   swapCreative(adId: string, creativeId: string) {

@@ -1,3 +1,4 @@
+import type { Brief, DesignDoc, Direction } from "@keel/core/studio";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Role = "owner" | "reviewer" | "viewer";
 
@@ -124,3 +125,40 @@ export const ACTION_LABEL: Record<string, string> = {
   PAUSE_AD: "Pause the ad", REVERT_CREATIVE: "Restore the approved creative", RELOCK_SETTING: "Switch it back off",
   REPLACE_CREATIVE: "Replace with an on-brand version", LOG: "Log only",
 };
+
+// ── Studio ───────────────────────────────────────────────────────────────────
+export type { Brief, DesignDoc, Direction };
+export interface StudioStep { key: string; label: string; status: "waiting" | "running" | "done" | "failed"; detail?: string; ms?: number }
+export type StudioDirection = Direction & { sceneRef: string; sceneHistory?: string[]; productInScene?: boolean };
+export interface StudioDesign { id: string; projectId: string; direction: number; size: "square" | "portrait" | "story"; doc: DesignDoc; renderRef: string | null; check: { pass: boolean; score: number; issues: string[] } | null; picked: boolean; updatedAt: string }
+export interface StudioProject {
+  id: string; name: string; accountId: string; brandId: string; status: "drafting" | "ready" | "launching" | "launched" | "failed";
+  brief: Brief; steps: StudioStep[]; directions: StudioDirection[] | null; error: string | null; createdAt: string; updatedAt: string;
+  launch: { campaignId: string; adsetId: string; ads: { designId: string; direction: number; adId: string }[]; at: string } | null;
+}
+export interface StudioProjectDetail extends StudioProject { role: Role; designs: StudioDesign[] }
+
+async function upload(file: File): Promise<{ ref: string }> {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await fetch("/api/studio/uploads", { method: "POST", body: fd, credentials: "same-origin" });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new ApiError(res.status, (body as { error?: string }).error ?? "Upload failed");
+  return body as { ref: string };
+}
+
+export const studio = {
+  upload,
+  projects: () => request<(StudioProject & { covers: (string | null)[] })[]>("/api/studio/projects"),
+  project: (id: string) => request<StudioProjectDetail>(`/api/studio/projects/${id}`),
+  create: (b: { accountId: string; name: string; brief: Brief }) => request<{ id: string }>("/api/studio/projects", { method: "POST", body: JSON.stringify(b) }),
+  saveDesign: (id: string, b: { doc?: DesignDoc; picked?: boolean }) => request<{ ok: true; renderRef: string }>(`/api/studio/designs/${id}`, { method: "PATCH", body: JSON.stringify(b) }),
+  newScene: (id: string, n: number) => request<{ sceneRef: string }>(`/api/studio/projects/${id}/directions/${n}/scene`, { method: "POST" }),
+  useScene: (id: string, n: number, ref: string) => request(`/api/studio/projects/${id}/directions/${n}/use-scene`, { method: "POST", body: JSON.stringify({ ref }) }),
+  template: (id: string, n: number, template: string) => request(`/api/studio/projects/${id}/directions/${n}/template`, { method: "POST", body: JSON.stringify({ template }) }),
+  retry: (id: string) => request(`/api/studio/projects/${id}/retry`, { method: "POST" }),
+  launch: (id: string) => request<NonNullable<StudioProject["launch"]>>(`/api/studio/projects/${id}/launch`, { method: "POST" }),
+  downloadUrl: (designId: string) => `/api/studio/designs/${designId}/download`,
+};
+export const adsManagerUrl = (accountId: string, campaignId?: string) =>
+  `https://adsmanager.facebook.com/adsmanager/manage/${campaignId ? "adsets" : "campaigns"}?act=${accountId.replace("act_", "")}${campaignId ? `&selected_campaign_ids=${campaignId}` : ""}`;

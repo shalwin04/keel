@@ -3,14 +3,15 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, type ReactNode } from "react";
 import { api } from "../api.ts";
 import { useLiveEvents } from "../events.ts";
-import { IconBook, IconGear, IconGrid, IconInbox, IconPulse, IconShield, Logo } from "./Icons.tsx";
+import { IconBook, IconGear, IconGrid, IconInbox, IconPulse, IconShield, IconSparkle, Logo } from "./Icons.tsx";
 import { cx } from "./ui.tsx";
 
 const NAV: { to: string; label: string; icon: (p: { size?: number }) => ReactNode; mobile?: boolean }[] = [
+  { to: "/create", label: "Create", icon: IconSparkle, mobile: true },
   { to: "/", label: "Review", icon: IconInbox, mobile: true },
   { to: "/activity", label: "Activity", icon: IconPulse, mobile: true },
   { to: "/ads", label: "Ads", icon: IconGrid, mobile: true },
-  { to: "/rules", label: "Rules", icon: IconBook, mobile: true },
+  { to: "/rules", label: "Rules", icon: IconBook },
   { to: "/audit", label: "Audit log", icon: IconShield },
   { to: "/settings", label: "Settings", icon: IconGear, mobile: true },
 ];

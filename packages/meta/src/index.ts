@@ -6,3 +6,4 @@ export * from "./ads-mcp.ts";
 export * from "./variants.ts";
 export * from "./media.ts";
 export * from "./voice.ts";
+export * from "./render.ts";

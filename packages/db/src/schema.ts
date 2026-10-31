@@ -190,3 +190,37 @@ export const evalRuns = pgTable("eval_runs", {
   costPerVariantUsd: real("cost_per_variant_usd"),
   createdAt: ts("created_at").defaultNow().notNull(),
 });
+
+// ── Studio ───────────────────────────────────────────────────────────────────
+
+/** One campaign being made in Studio: the brief, the agent's directions and progress, and what was launched. */
+export const studioProjects = pgTable("studio_projects", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  brandId: text("brand_id").notNull().references(() => brands.id),
+  accountId: text("account_id").notNull(), // Meta ad account the campaign launches in
+  name: text("name").notNull(),
+  brief: jsonb("brief").notNull(),
+  status: text("status").notNull(), // drafting | ready | launching | launched | failed
+  steps: jsonb("steps").notNull(), // [{ key, label, status, detail, ms }]
+  directions: jsonb("directions"),
+  launch: jsonb("launch"), // { campaignId, adsetId, ads: [{ designId, adId, creativeId }] }
+  error: text("error"),
+  createdBy: text("created_by").notNull().references(() => users.id),
+  createdAt: ts("created_at").defaultNow().notNull(),
+  updatedAt: ts("updated_at").defaultNow().notNull(),
+}, (t) => [index("studio_projects_ws_idx").on(t.workspaceId, t.createdAt)]);
+
+/** One layered design: a direction in one size. The document is the source; the PNG is rendered from it. */
+export const studioDesigns = pgTable("studio_designs", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id").notNull().references(() => studioProjects.id),
+  direction: integer("direction").notNull(),
+  size: text("size").notNull(),
+  doc: jsonb("doc").notNull(),
+  renderRef: text("render_ref"),
+  check: jsonb("check"), // { pass, score, issues[] }
+  picked: boolean("picked").default(false).notNull(),
+  createdAt: ts("created_at").defaultNow().notNull(),
+  updatedAt: ts("updated_at").defaultNow().notNull(),
+}, (t) => [index("studio_designs_project_idx").on(t.projectId)]);

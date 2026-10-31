@@ -14,6 +14,7 @@ import type { AppEnv } from "./env.ts";
 import { createEventHub } from "./events.ts";
 import { rateLimit } from "./ratelimit.ts";
 import { apiRoutes } from "./routes.ts";
+import { studioRoutes } from "./studio.ts";
 
 checkEnv();
 const rt = await createRuntime();
@@ -64,6 +65,7 @@ app.use("/auth/*", rateLimit({ windowMs: 60_000, max: 30 }));
 app.route("/auth", authRoutes(rt.db));
 app.use("/api/*", rateLimit({ windowMs: 60_000, max: 600 }));
 app.use("/api/*", requireUser(rt.db));
+app.route("/api/studio", studioRoutes(rt));
 app.route("/api", apiRoutes(rt, hub));
 app.notFound(async (c) => {
   if (c.req.path.startsWith("/api/") || c.req.path.startsWith("/auth/")) return c.json({ error: "not found" }, 404);

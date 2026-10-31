@@ -84,29 +84,45 @@ function safeJson(s: string): unknown {
   try { return JSON.parse(m ? m[0] : s); } catch { return undefined; }
 }
 
-/**
- * Muse Image: an on-brand replacement image, conditioned on the approved original (and up to 9 more references).
- * Uses the OpenAI-compatible images endpoint; returns PNG/JPEG bytes.
- */
-export async function generateImage(o: { prompt: string; references: ImageInput[]; size?: string; onCall?: (i: ModelCallInfo) => void }): Promise<Buffer> {
+/** Muse Image, text to image (`/images/generations`). Returns image bytes (Meta sends WebP). */
+export async function generateImage(o: { prompt: string; references?: ImageInput[]; size?: string; onCall?: (i: ModelCallInfo) => void }): Promise<Buffer> {
+  // Reference images go through the edit path: the generations endpoint doesn't take them.
+  if (o.references?.length) return editImage({ prompt: o.prompt, image: o.references[0]!, onCall: o.onCall });
   const t0 = Date.now();
   const res = await fetch(`${config.metaApiBase}/images/generations`, {
     method: "POST",
     headers: { Authorization: `Bearer ${config.metaApiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: config.models.image,
-      prompt: o.prompt,
-      size: o.size ?? "1024x1024",
-      n: 1,
-      response_format: "b64_json",
-      reference_images: o.references.slice(0, 10).map((r) => ("url" in r ? r.url : r.dataUrl)),
-    }),
+    body: JSON.stringify({ model: config.models.image, prompt: o.prompt, size: o.size ?? "1024x1024", n: 1, response_format: "b64_json" }),
+    signal: AbortSignal.timeout(180_000),
   });
   if (!res.ok) throw new Error(`Muse Image ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const json = (await res.json()) as { data?: { b64_json?: string; url?: string }[] };
-  o.onCall?.({ model: config.models.image, ms: Date.now() - t0 });
+  const json = (await res.json()) as { data?: { b64_json?: string; url?: string }[]; usage?: { input_tokens?: number; output_tokens?: number } };
+  o.onCall?.({ model: config.models.image, ms: Date.now() - t0, inputTokens: json.usage?.input_tokens, outputTokens: json.usage?.output_tokens });
   const first = json.data?.[0];
   if (first?.b64_json) return Buffer.from(first.b64_json, "base64");
   if (first?.url) return Buffer.from(await (await fetch(first.url)).arrayBuffer());
   throw new Error("Muse Image returned no image");
+}
+
+/**
+ * Muse Image, image to image (Responses API): keeps what the instruction says to keep (e.g. the product)
+ * and changes the rest. The image comes back as an `image_generation_call` output item.
+ */
+export async function editImage(o: { prompt: string; image: ImageInput; onCall?: (i: ModelCallInfo) => void }): Promise<Buffer> {
+  const t0 = Date.now();
+  const res = await fetch(`${config.metaApiBase}/responses`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.metaApiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: config.models.image,
+      input: [{ role: "user", content: [{ type: "input_image", image_url: "url" in o.image ? o.image.url : o.image.dataUrl }, { type: "input_text", text: o.prompt }] }],
+    }),
+    signal: AbortSignal.timeout(240_000),
+  });
+  if (!res.ok) throw new Error(`Muse Image ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const json = (await res.json()) as { output?: { type: string; result?: string }[]; usage?: { input_tokens?: number; output_tokens?: number }; error?: { message?: string } };
+  o.onCall?.({ model: config.models.image, ms: Date.now() - t0, inputTokens: json.usage?.input_tokens, outputTokens: json.usage?.output_tokens });
+  const img = json.output?.find((x) => x.type === "image_generation_call" && x.result)?.result;
+  if (!img) throw new Error(`Muse Image returned no image${json.error?.message ? `: ${json.error.message}` : ""}`);
+  return Buffer.from(img, "base64");
 }
