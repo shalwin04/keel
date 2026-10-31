@@ -1,40 +1,52 @@
 import { useQuery } from "@tanstack/react-query";
-import { api } from "../api.ts";
+import { useMemo, useState } from "react";
+import { api, type AuditEntry } from "../api.ts";
+import { IconShield } from "../components/Icons.tsx";
+import { Card, Empty, ErrorNote, Input, PageHeader, Pill, Skeleton, relTime } from "../components/ui.tsx";
+
+const EVENT: Record<string, string> = {
+  "cycle.ingested": "Checked the account", "cycle.decided": "Decided what to propose", "cycle.completed": "Finished a check", "cycle.error": "A check failed",
+  "proposal.approve": "Approved a change", "proposal.reject": "Kept an ad running", "proposal.replace": "Asked for a replacement", "proposal.expired": "A request expired",
+  "action.executed": "Changed the ad", "action.failed": "A change failed", "action.verified": "Confirmed the change with Meta", "action.verify_failed": "Couldn't confirm the change",
+  "account.connected": "Connected an ad account", "account.claimed": "Moved an ad account into this workspace", "account.updated": "Changed account settings", "rulebook.updated": "Edited the rulebook", "rulebook.drafted": "Drafted the rulebook",
+  "policy.updated": "Changed approval rules",
+};
+
+const detail = (e: AuditEntry) => {
+  const p = (e.payload ?? {}) as Record<string, unknown>;
+  const bits = [p.detail, p.metaAccountId, p.adId && `ad ${p.adId}`, typeof p.ads === "number" && `${p.ads} ads`, p.version && `v${p.version}`, p.simulated && "simulated"].filter(Boolean);
+  return bits.join(" · ");
+};
 
 export function Audit() {
-  const audit = useQuery({ queryKey: ["audit"], queryFn: api.audit, refetchInterval: 30_000 });
-  if (audit.isLoading) return <p className="text-hull-soft">Loading the audit log…</p>;
-  if (audit.isError) return <p role="alert" className="text-port">Couldn't load the audit log: {String(audit.error)}</p>;
-  const { verified, brokenAt, entries } = audit.data!;
-
+  const q = useQuery({ queryKey: ["audit"], queryFn: api.audit });
+  const [filter, setFilter] = useState("");
+  const rows = useMemo(() => (q.data?.entries ?? []).filter((e) => !filter || `${e.actorName} ${EVENT[e.event] ?? e.event} ${detail(e)}`.toLowerCase().includes(filter.toLowerCase())), [q.data, filter]);
   return (
-    <div className="max-w-4xl">
-      <h1 className="display text-3xl font-semibold">Audit log</h1>
-      <p className="mt-1 max-w-2xl text-hull-soft">
-        Every check, decision and change, in order. Each entry is hashed together with the one before it, so any edit to history breaks the chain.
-      </p>
-      <p className={`mt-4 inline-flex items-center gap-2 font-medium ${verified ? "text-starboard" : "text-port"}`}>
-        <span className={`h-2.5 w-2.5 rounded-full ${verified ? "bg-starboard" : "bg-port"}`} />
-        {verified ? "Chain verified: no entry has been altered" : `Chain broken at entry ${brokenAt}`}
-      </p>
-      <table className="mt-6 w-full text-sm">
-        <thead className="text-left text-hull-soft">
-          <tr><th className="py-2 font-normal">When</th><th className="font-normal">Who</th><th className="font-normal">What</th><th className="font-normal">Hash</th></tr>
-        </thead>
-        <tbody className="divide-y divide-fog/30">
-          {entries.map((e) => (
-            <tr key={e.seq} className="align-top">
-              <td className="whitespace-nowrap py-2 pr-4">{new Date(e.at).toLocaleString()}</td>
-              <td className="pr-4">{e.actorName}</td>
-              <td className="pr-4">
-                <p className="font-medium">{e.event.replaceAll(".", " ").replaceAll("_", " ")}</p>
-                <p className="max-w-md truncate text-hull-soft">{JSON.stringify(e.payload)}</p>
-              </td>
-              <td className="text-hull-soft" title={e.hash}>{e.hash.slice(0, 10)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div>
+      <PageHeader title="Audit log" subtitle="Every decision and every change, in a tamper-evident chain."
+        actions={q.data && (q.data.verified
+          ? <Pill tone="ok"><IconShield size={13} /> Chain intact · {q.data.total} entries</Pill>
+          : <Pill tone="critical">Chain broken at #{q.data.brokenAt}</Pill>)} />
+      <div className="mb-4 max-w-sm"><Input type="search" placeholder="Filter" value={filter} onChange={(e) => setFilter(e.target.value)} /></div>
+      {q.isLoading ? <Skeleton className="h-96" /> : q.isError ? <ErrorNote error={q.error} /> : !rows.length ? (
+        <Card><Empty icon={<IconShield size={26} />} title={filter ? "Nothing matches" : "Nothing logged yet"} /></Card>
+      ) : (
+        <Card className="overflow-hidden">
+          <ul className="divide-y divide-[var(--line)]">
+            {rows.map((e) => (
+              <li key={e.seq} className="grid grid-cols-[1fr_auto] gap-x-4 px-4 py-3 md:grid-cols-[160px_1fr_auto]">
+                <span className="text-[13px] text-ink-2 md:pt-0.5">{e.actorName}</span>
+                <span className="col-span-2 row-start-2 min-w-0 md:col-span-1 md:row-start-auto">
+                  <span className="block text-[14px] font-medium">{EVENT[e.event] ?? e.event}</span>
+                  {detail(e) && <span className="block truncate text-[13px] text-ink-2">{detail(e)}</span>}
+                </span>
+                <span className="row-start-1 text-right text-[12px] text-ink-3 md:row-start-auto" title={`#${e.seq} · ${e.hash.slice(0, 16)}…`}>{relTime(e.at)}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
     </div>
   );
 }

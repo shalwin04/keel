@@ -1,13 +1,13 @@
-import { severityColor, type Severity } from "../api.ts";
+import type { Severity } from "../api.ts";
+import { Pill } from "./ui.tsx";
 
-/** A small filled pennant; its colour carries severity, the text label says it in words. */
-export function SeverityMark({ severity, withLabel = false }: { severity: Severity; withLabel?: boolean }) {
-  return (
-    <span className="inline-flex items-center gap-1.5">
-      <svg width="10" height="12" viewBox="0 0 10 12" aria-hidden="true">
-        <path d="M1 0v12M1 1h8l-2.5 3L9 7H1" fill={severityColor[severity]} stroke={severityColor[severity]} strokeWidth="1.2" />
-      </svg>
-      {withLabel && <span className="text-sm capitalize" style={{ color: severityColor[severity] }}>{severity}</span>}
-    </span>
-  );
-}
+const LABEL: Record<Severity, string> = { critical: "Critical", high: "High", medium: "Medium", low: "Low" };
+
+/** Colour carries severity at a glance; the word says it for everyone. */
+export const SeverityDot = ({ severity, className = "" }: { severity: Severity; className?: string }) => (
+  <span aria-label={LABEL[severity]} className={`inline-block h-2 w-2 shrink-0 rounded-full bg-${severity} ${className}`} />
+);
+
+export const SeverityPill = ({ severity }: { severity: Severity }) => (
+  <Pill tone={severity}><span className={`h-1.5 w-1.5 rounded-full bg-${severity}`} />{LABEL[severity]}</Pill>
+);

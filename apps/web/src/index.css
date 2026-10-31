@@ -1,21 +1,126 @@
 @import "tailwindcss";
 
+/*
+ * Keel design tokens. Quiet, neutral surfaces; one accent; colour reserved for meaning (severity, state).
+ * Light by default, dark via the OS or the in-app setting (html[data-theme]).
+ */
+@source inline("bg-critical bg-high bg-medium bg-low text-critical text-high text-medium text-low");
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
-  --color-chart: #EEF2F1;      /* chart paper: page */
-  --color-chart-deep: #E1E8E6; /* recessed panels */
-  --color-hull: #14324A;       /* ink and primary */
-  --color-hull-soft: #3E5A6E;  /* secondary text */
-  --color-fog: #9AA7AE;        /* rules and muted text */
-  --color-brass: #B8862B;      /* actions and selection */
-  --color-port: #C8372D;       /* critical */
-  --color-ember: #CF6A2A;      /* high */
-  --color-ochre: #B99A2E;      /* medium */
-  --color-starboard: #2F7D5B;  /* verified, approved */
-  --font-sans: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-fill: var(--fill);
+  --color-fill-strong: var(--fill-strong);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-critical: var(--critical);
+  --color-high: var(--high);
+  --color-medium: var(--medium);
+  --color-low: var(--low);
+  --color-ok: var(--ok);
+
+  --radius-xl: 14px;
+  --radius-2xl: 18px;
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+
+  --animate-enter: enter 220ms var(--ease-out) both;
+  --animate-fade: fade 160ms var(--ease-out) both;
+  --animate-toast: toast 280ms var(--ease-drawer) both;
+  --animate-pulse-soft: pulse-soft 1.6s var(--ease-in-out) infinite;
 }
 
-html { font-optical-sizing: auto; }
-body { @apply bg-chart text-hull antialiased; font-variant-numeric: tabular-nums; }
-:focus-visible { outline: 2px solid var(--color-brass); outline-offset: 2px; }
-.display { font-stretch: 82%; letter-spacing: -0.015em; }
-@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+:root {
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --fill: rgb(120 120 128 / 0.08);
+  --fill-strong: rgb(120 120 128 / 0.16);
+  --line: rgb(60 60 67 / 0.12);
+  --ink: #1d1d1f;
+  --ink-2: #6e6e73;
+  --ink-3: #a1a1a6;
+  --accent: #0071e3;
+  --accent-ink: #ffffff;
+  --critical: #e5352b;
+  --high: #e07700;
+  --medium: #b88a00;
+  --low: #8e8e93;
+  --ok: #1f8a3c;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.04), 0 4px 16px rgb(0 0 0 / 0.04);
+  --shadow-pop: 0 10px 40px rgb(0 0 0 / 0.12), 0 2px 6px rgb(0 0 0 / 0.06);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #000000; --surface: #1c1c1e; --raised: #2c2c2e;
+    --fill: rgb(120 120 128 / 0.18); --fill-strong: rgb(120 120 128 / 0.32);
+    --line: rgb(84 84 88 / 0.48);
+    --ink: #f5f5f7; --ink-2: #98989d; --ink-3: #636366;
+    --accent: #2997ff; --accent-ink: #ffffff;
+    --critical: #ff453a; --high: #ff9f0a; --medium: #ffd60a; --low: #8e8e93; --ok: #32d74b;
+    --shadow: 0 0 0 1px rgb(255 255 255 / 0.04);
+    --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.06), 0 16px 48px rgb(0 0 0 / 0.6);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #000000; --surface: #1c1c1e; --raised: #2c2c2e;
+  --fill: rgb(120 120 128 / 0.18); --fill-strong: rgb(120 120 128 / 0.32);
+  --line: rgb(84 84 88 / 0.48);
+  --ink: #f5f5f7; --ink-2: #98989d; --ink-3: #636366;
+  --accent: #2997ff; --accent-ink: #ffffff;
+  --critical: #ff453a; --high: #ff9f0a; --medium: #ffd60a; --low: #8e8e93; --ok: #32d74b;
+  --shadow: 0 0 0 1px rgb(255 255 255 / 0.04);
+  --shadow-pop: 0 0 0 1px rgb(255 255 255 / 0.06), 0 16px 48px rgb(0 0 0 / 0.6);
+  color-scheme: dark;
+}
+
+@keyframes enter { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes toast { from { opacity: 0; transform: translateY(12px) scale(0.98); } to { opacity: 1; transform: none; } }
+@keyframes pulse-soft { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+html { -webkit-text-size-adjust: 100%; text-rendering: optimizeLegibility; }
+body {
+  background: var(--bg); color: var(--ink);
+  font-family: var(--font-sans); font-size: 15px; line-height: 1.45; letter-spacing: -0.01em;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "tnum" 1;
+}
+h1, h2, h3 { font-family: var(--font-display); letter-spacing: -0.022em; }
+::selection { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+:focus-visible { outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 2px; border-radius: 8px; }
+
+/* Press feedback: every button gives a little under the finger. */
+.press { transition: transform 160ms var(--ease-out), background-color 160ms var(--ease-out), color 160ms var(--ease-out), opacity 160ms var(--ease-out), box-shadow 160ms var(--ease-out); }
+.press:active:not(:disabled) { transform: scale(0.97); }
+
+.card { background: var(--surface); border-radius: var(--radius-2xl); box-shadow: var(--shadow); }
+.hairline { border-color: var(--line); }
+.material {
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+.scroll-thin { scrollbar-width: thin; scrollbar-color: var(--fill-strong) transparent; }
+
+/* Hover only where hover exists, so touch devices don't keep a stuck hover state. */
+@media (hover: none) { .hover-only { display: none; } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+  .press:active:not(:disabled) { transform: none; }
+}
