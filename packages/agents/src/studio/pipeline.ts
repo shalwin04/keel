@@ -2,20 +2,25 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
   BriefSchema, DesignDocSchema, RulebookSchema, SIZES, TEMPLATES, compose, designToSvg, relayout,
-  type Brief, type DesignDoc, type Direction, type Rulebook, type SizeKey,
+  type Brief, type DesignDoc, type Direction, type Research, type Rulebook, type SizeKey, type TemplateKey,
 } from "@keel/core";
 import { schema, type Db } from "@keel/db";
 import { type AdsGraphClient, inlineImageHref, readMedia, renderSvgToPng, saveMedia } from "@keel/meta";
-import type { StudioModels } from "./models.ts";
+import type { SceneRanking, StudioModels } from "./models.ts";
+import { gatherResearch } from "./research.ts";
 
-export type StepKey = "plan" | "scenes" | "compose" | "check";
-export interface Step { key: StepKey; label: string; status: "waiting" | "running" | "done" | "failed"; detail?: string; ms?: number }
+export type StepKey = "research" | "strategy" | "scenes" | "compose" | "check" | "storyboard";
+export interface Step { key: StepKey; label: string; status: "waiting" | "running" | "done" | "failed" | "skipped"; detail?: string; ms?: number }
 const STEPS: Step[] = [
-  { key: "plan", label: "Plan three creative directions", status: "waiting" },
-  { key: "scenes", label: "Generate a scene for each", status: "waiting" },
+  { key: "research", label: "Research competitors' ads", status: "waiting" },
+  { key: "strategy", label: "Plan three directions and their storyboards", status: "waiting" },
+  { key: "scenes", label: "Shoot, art-direct and refine the hero images", status: "waiting" },
   { key: "compose", label: "Lay out every size with your real product", status: "waiting" },
   { key: "check", label: "Check each design before you see it", status: "waiting" },
+  { key: "storyboard", label: "Draw the Reel storyboard", status: "waiting" },
 ];
+export interface LogEntry { at: string; step: StepKey; text: string; kind: "info" | "decision" | "warn" }
+type DirRow = Direction & { sceneRef: string; sceneHistory: string[]; productInScene?: boolean; ranking?: SceneRanking; frames?: (string | null)[] };
 
 /** The features Studio switches off on new creatives, plus any the rulebook locks. Meta's own defaults are never trusted. */
 export const STUDIO_LOCKED_FEATURES = [
@@ -55,6 +60,57 @@ export function createStudio(d: StudioDeps) {
     }
   }
 
+  /** The agent's running commentary: what it found and what it decided, shown live on the project page. */
+  async function log(projectId: string, step: StepKey, text: string, kind: LogEntry["kind"] = "info") {
+    const [p] = await db.select({ log: schema.studioProjects.log }).from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    const entries = [...((p?.log ?? []) as LogEntry[]), { at: new Date().toISOString(), step, text, kind }].slice(-200);
+    await db.update(schema.studioProjects).set({ log: entries }).where(eq(schema.studioProjects.id, projectId));
+  }
+
+  const CANDIDATES = Math.max(1, Math.min(3, Number(process.env.STUDIO_CANDIDATES ?? 2)));
+
+  /**
+   * Art direction for one hero image: shoot a few candidates, let Muse Spark rank them as an art director would,
+   * and if the winner still has a fixable flaw, have Muse Image fix exactly that (once).
+   */
+  async function artDirect(projectId: string, dir: Direction, brief: Brief, product: { dataUrl: string }[], label: string) {
+    const shots = await Promise.all(Array.from({ length: CANDIDATES }, (_, k) => d.models.generateScene(dir, brief, product, k).catch((err: Error) => { void log(projectId, "scenes", `${label}: one take failed (${err.message.slice(0, 80)})`, "warn"); return undefined; })));
+    const ok = shots.filter((x): x is NonNullable<typeof x> => !!x);
+    if (!ok.length) throw new Error(`no image came back for ${label}`);
+    const refs = await Promise.all(ok.map((x) => saveMedia(x.bytes, ".png", "scenes")));
+    let best = 0;
+    let ranking: SceneRanking | undefined;
+    if (refs.length > 1 || product[0]) {
+      try {
+        ranking = await d.models.rankScenes(await Promise.all(refs.map(imageInput)), product[0]!, dir);
+        best = Math.min(refs.length - 1, Math.max(0, ranking.best));
+        const sc = ranking.scores.find((x) => x.index === best);
+        await log(projectId, "scenes", `${label}: picked take ${best + 1} of ${refs.length}${sc ? ` (score ${Math.round(sc.score * 100)}, product ${Math.round(sc.product * 100)}, look ${Math.round(sc.aesthetics * 100)})` : ""}${sc?.notes ? ` · ${sc.notes}` : ""}`, "decision");
+      } catch (err) {
+        await log(projectId, "scenes", `${label}: ranking skipped (${(err as Error).message.slice(0, 80)})`, "warn");
+      }
+    }
+    let ref = refs[best]!;
+    const bestScore = ranking?.scores.find((x) => x.index === best)?.score ?? 1;
+    if (ranking?.fix && bestScore < 0.85) {
+      try {
+        ref = await saveMedia(await d.models.refineScene(await imageInput(ref), ranking.fix, brief), ".png", "scenes");
+        await log(projectId, "scenes", `${label}: refined — ${ranking.fix}`, "decision");
+      } catch (err) {
+        await log(projectId, "scenes", `${label}: refinement skipped (${(err as Error).message.slice(0, 80)})`, "warn");
+      }
+    }
+    return { ref, productInScene: ok[best]!.productInScene, ranking, takes: refs };
+  }
+
+  /** The agent picks the layout that suits where the image has room for type. */
+  function layoutFor(r: SceneRanking | undefined, fallback: TemplateKey): TemplateKey {
+    if (!r) return fallback;
+    if (r.space === "left" || r.space === "right") return "split";
+    if (r.space === "none") return "card";
+    return fallback === "split" ? "split" : "hero";
+  }
+
   async function brandContext(brandId: string): Promise<{ name: string; rulebook?: Rulebook }> {
     const [b] = await db.select().from(schema.brands).where(eq(schema.brands.id, brandId));
     const [rb] = await db.select().from(schema.rulebooks).where(eq(schema.rulebooks.brandId, brandId)).orderBy(desc(schema.rulebooks.version)).limit(1);
@@ -73,7 +129,10 @@ export function createStudio(d: StudioDeps) {
     return { sceneRef, productRef: brief.productPhotos[0]!, brand, direction, price: brief.price || undefined, offer: brief.offer || undefined, productInScene };
   }
 
-  /** The agent run: plan → scenes → layouts → self-check (regenerating a direction's scene once if it fails). */
+  /**
+   * The agent run: research → strategy (directions, art briefs, storyboards) → art-directed hero images →
+   * layouts in every size → self-check → Reel storyboard frames. Each step logs what it found and decided.
+   */
   async function run(projectId: string) {
     const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
     if (!p) return;
@@ -81,26 +140,34 @@ export function createStudio(d: StudioDeps) {
     const { name: brand, rulebook } = await brandContext(p.brandId);
     const product = await Promise.all(brief.productPhotos.slice(0, 3).map(imageInput));
     try {
-      const directions = await timed(projectId, "plan", async () => {
-        const ds = (await d.models.planDirections(brief, brand, product, rulebook)).slice(0, 3);
+      const research = await timed(projectId, "research", async () => {
+        const r: Research = await gatherResearch({ models: d.models, brief, brand, log: (t, k) => log(projectId, "research", t, k) });
+        await db.update(schema.studioProjects).set({ research: r }).where(eq(schema.studioProjects.id, projectId));
+        return { value: r, detail: r.ads.length ? `${r.ads.length} ads from ${new Set(r.ads.map((a) => a.pageName)).size} advertisers · ${r.insights.whiteSpace[0] ?? r.insights.summary.slice(0, 80)}` : r.note ?? "no competitor ads found" };
+      });
+
+      const directions = await timed(projectId, "strategy", async () => {
+        const ds = (await d.models.planDirections(brief, brand, product, rulebook, research.ads.length ? research.insights : undefined)).slice(0, 3);
         if (!ds.length) throw new Error("no directions came back");
+        for (const x of ds) await log(projectId, "strategy", `${x.title}: ${x.rationale || x.angle}`, "decision");
         return { value: ds, detail: ds.map((x) => x.title).join(" · ") };
       });
+
       const scenes = await timed(projectId, "scenes", async () => {
-        const made = await Promise.all(directions.map(async (dir) => {
-          const r = await d.models.generateScene(dir, brief, product);
-          return { ref: await saveMedia(r.bytes, ".png", "scenes"), productInScene: r.productInScene };
-        }));
-        return { value: made, detail: `${made.length} scenes${made.every((m) => m.productInScene) ? ", your product placed in each" : ""}` };
+        const made = await Promise.all(directions.map((dir) => artDirect(projectId, dir, brief, product, dir.title)));
+        return { value: made, detail: `${made.length} hero images from ${made.reduce((n, m) => n + m.takes.length, 0)} takes${made.every((m) => m.productInScene) ? " · your product in each" : ""}` };
       });
-      await db.update(schema.studioProjects).set({ directions: directions.map((dir, i) => ({ ...dir, sceneRef: scenes[i]!.ref, productInScene: scenes[i]!.productInScene, sceneHistory: [scenes[i]!.ref] })) }).where(eq(schema.studioProjects.id, projectId));
+      const dirRows: DirRow[] = directions.map((dir, i) => ({ ...dir, sceneRef: scenes[i]!.ref, productInScene: scenes[i]!.productInScene, ranking: scenes[i]!.ranking, sceneHistory: [...scenes[i]!.takes, scenes[i]!.ref].filter((v, k, a) => a.indexOf(v) === k).slice(-6) }));
+      await db.update(schema.studioProjects).set({ directions: dirRows }).where(eq(schema.studioProjects.id, projectId));
 
       await timed(projectId, "compose", async () => {
         await db.delete(schema.studioDesigns).where(eq(schema.studioDesigns.projectId, projectId));
         let n = 0;
-        for (const [i, dir] of directions.entries()) {
+        for (const [i, dir] of dirRows.entries()) {
+          const template = layoutFor(dir.ranking, TEMPLATES[i % TEMPLATES.length]!);
+          if (dir.ranking) await log(projectId, "compose", `${dir.title}: ${template} layout (open space ${dir.ranking.space})`, "decision");
           for (const size of Object.keys(SIZES) as SizeKey[]) {
-            const doc = compose({ ...composeInput(brief, brand, dir, scenes[i]!.ref, scenes[i]!.productInScene), template: TEMPLATES[i % TEMPLATES.length]!, size });
+            const doc = compose({ ...composeInput(brief, brand, dir, dir.sceneRef, dir.productInScene), template, size });
             await db.insert(schema.studioDesigns).values({ id: randomUUID(), projectId, direction: i, size, doc, renderRef: await renderDesign(doc) });
             n++;
           }
@@ -116,22 +183,50 @@ export function createStudio(d: StudioDeps) {
           if (!sq?.renderRef) continue;
           let check = await d.models.critique(await imageInput(sq.renderRef), await imageInput(productRef), dir, rulebook);
           if (!check.pass && check.score < 0.5) {
-            // One retry: new scene for this direction, re-laid out in every size.
+            await log(projectId, "check", `${dir.title}: failed the check (${check.issues[0] ?? "low score"}), reshooting`, "decision");
             await regenerateScene(projectId, i, false);
             const [again] = await db.select().from(schema.studioDesigns).where(and(eq(schema.studioDesigns.projectId, projectId), eq(schema.studioDesigns.direction, i), eq(schema.studioDesigns.size, "square")));
             check = await d.models.critique(await imageInput(again!.renderRef!), await imageInput(productRef), dir, rulebook);
             fixed++;
           }
           if (check.pass) passed++;
+          else await log(projectId, "check", `${dir.title}: ${check.issues.join("; ")}`, "warn");
           await db.update(schema.studioDesigns).set({ check }).where(and(eq(schema.studioDesigns.projectId, projectId), eq(schema.studioDesigns.direction, i)));
         }
-        return { value: passed, detail: `${passed} of ${directions.length} ready${fixed ? ` · ${fixed} regenerated` : ""}` };
+        return { value: passed, detail: `${passed} of ${directions.length} ready${fixed ? ` · ${fixed} reshot` : ""}` };
       });
+
+      // The storyboard for the strongest direction is drawn now; the others on request.
+      await timed(projectId, "storyboard", async () => {
+        const n = await drawStoryboard(projectId, 0);
+        return { value: n, detail: n ? `${n} frames for "${directions[0]!.title}"` : "no Reel shots planned" };
+      }).catch(() => undefined);
+
       await db.update(schema.studioProjects).set({ status: "ready", updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
-      await d.audit(p.createdBy, "studio.drafted", { projectId, accountId: p.accountId, directions: directions.length });
+      await d.audit(p.createdBy, "studio.drafted", { projectId, accountId: p.accountId, directions: directions.length, competitorAds: research.ads.length });
     } catch (err) {
       await db.update(schema.studioProjects).set({ status: "failed", error: (err as Error).message.slice(0, 500), updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
     }
+  }
+
+  /** Draws one frame per Reel shot for a direction (in parallel), keeping the real product in product shots. */
+  async function drawStoryboard(projectId: string, direction: number) {
+    const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    if (!p) throw new Error("not found");
+    const brief = BriefSchema.parse(p.brief);
+    const dirs = (p.directions ?? []) as DirRow[];
+    const dir = dirs[direction];
+    if (!dir?.storyboard.reel.length) return 0;
+    const product = await Promise.all(brief.productPhotos.slice(0, 2).map(imageInput));
+    const frames = await Promise.all(dir.storyboard.reel.map(async (shot, k) => {
+      try { return await saveMedia(await d.models.storyboardFrame(shot, dir, brief, product), ".png", "storyboard"); }
+      catch (err) { await log(projectId, "storyboard", `Shot ${k + 1}: ${(err as Error).message.slice(0, 80)}`, "warn"); return null; }
+    }));
+    const [fresh] = await db.select({ directions: schema.studioProjects.directions }).from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    const rows = (fresh?.directions ?? dirs) as DirRow[];
+    rows[direction] = { ...rows[direction]!, frames };
+    await db.update(schema.studioProjects).set({ directions: rows, updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
+    return frames.filter(Boolean).length;
   }
 
   async function regenerateScene(projectId: string, direction: number, audit = true) {
@@ -139,13 +234,13 @@ export function createStudio(d: StudioDeps) {
     if (!p) throw new Error("not found");
     const brief = BriefSchema.parse(p.brief);
     const { name: brand } = await brandContext(p.brandId);
-    const dirs = (p.directions ?? []) as (Direction & { sceneRef: string; sceneHistory: string[]; productInScene?: boolean })[];
+    const dirs = (p.directions ?? []) as DirRow[];
     const dir = dirs[direction];
     if (!dir) throw new Error("no such direction");
     const product = await Promise.all(brief.productPhotos.slice(0, 2).map(imageInput));
-    const scene = await d.models.generateScene(dir, brief, product);
-    const sceneRef = await saveMedia(scene.bytes, ".png", "scenes");
-    dirs[direction] = { ...dir, sceneRef, productInScene: scene.productInScene, sceneHistory: [...(dir.sceneHistory ?? []), sceneRef].slice(-6) };
+    const scene = await artDirect(projectId, dir, brief, product, dir.title);
+    const sceneRef = scene.ref;
+    dirs[direction] = { ...dir, sceneRef, productInScene: scene.productInScene, ranking: scene.ranking, sceneHistory: [...(dir.sceneHistory ?? []), ...scene.takes, sceneRef].filter((v, k, a) => a.indexOf(v) === k).slice(-8) };
     await db.update(schema.studioProjects).set({ directions: dirs, updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
     await useScene(projectId, direction, sceneRef);
     if (audit) await d.audit(p.createdBy, "studio.scene_regenerated", { projectId, direction });
@@ -252,6 +347,6 @@ export function createStudio(d: StudioDeps) {
     return projects.map((p) => ({ ...p, covers: covers.filter((c) => c.projectId === p.id).sort((a, b) => a.direction - b.direction).map((c) => c.renderRef) }));
   }
 
-  return { create, run, list, regenerateScene, useScene, saveDesign, changeTemplate, launch, renderDesign };
+  return { create, run, list, regenerateScene, useScene, saveDesign, changeTemplate, launch, renderDesign, drawStoryboard };
 }
 export type Studio = ReturnType<typeof createStudio>;

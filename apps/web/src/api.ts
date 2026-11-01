@@ -1,4 +1,4 @@
-import type { Brief, DesignDoc, Direction } from "@keel/core/studio";
+import type { Brief, CompetitorAd, DesignDoc, Direction, Insights, ReelShot } from "@keel/core/studio";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Role = "owner" | "reviewer" | "viewer";
 
@@ -127,13 +127,16 @@ export const ACTION_LABEL: Record<string, string> = {
 };
 
 // ── Studio ───────────────────────────────────────────────────────────────────
-export type { Brief, DesignDoc, Direction };
-export interface StudioStep { key: string; label: string; status: "waiting" | "running" | "done" | "failed"; detail?: string; ms?: number }
-export type StudioDirection = Direction & { sceneRef: string; sceneHistory?: string[]; productInScene?: boolean };
+export type { Brief, CompetitorAd, DesignDoc, Direction, Insights, ReelShot };
+export interface StudioStep { key: string; label: string; status: "waiting" | "running" | "done" | "failed" | "skipped"; detail?: string; ms?: number }
+export interface StudioLog { at: string; step: string; text: string; kind: "info" | "decision" | "warn" }
+export interface StudioResearch { searchTerms: string[]; competitors: string[]; source: string; note?: string; ads: CompetitorAd[]; insights: Insights }
+export type StudioDirection = Direction & { sceneRef: string; sceneHistory?: string[]; productInScene?: boolean; frames?: (string | null)[]; ranking?: { space: string; scores: { index: number; score: number; notes: string }[] } };
 export interface StudioDesign { id: string; projectId: string; direction: number; size: "square" | "portrait" | "story"; doc: DesignDoc; renderRef: string | null; check: { pass: boolean; score: number; issues: string[] } | null; picked: boolean; updatedAt: string }
 export interface StudioProject {
   id: string; name: string; accountId: string; brandId: string; status: "drafting" | "ready" | "launching" | "launched" | "failed";
   brief: Brief; steps: StudioStep[]; directions: StudioDirection[] | null; error: string | null; createdAt: string; updatedAt: string;
+  research: StudioResearch | null; log: StudioLog[] | null;
   launch: { campaignId: string; adsetId: string; ads: { designId: string; direction: number; adId: string }[]; at: string } | null;
 }
 export interface StudioProjectDetail extends StudioProject { role: Role; designs: StudioDesign[] }
@@ -157,6 +160,7 @@ export const studio = {
   useScene: (id: string, n: number, ref: string) => request(`/api/studio/projects/${id}/directions/${n}/use-scene`, { method: "POST", body: JSON.stringify({ ref }) }),
   template: (id: string, n: number, template: string) => request(`/api/studio/projects/${id}/directions/${n}/template`, { method: "POST", body: JSON.stringify({ template }) }),
   retry: (id: string) => request(`/api/studio/projects/${id}/retry`, { method: "POST" }),
+  storyboard: (id: string, n: number) => request<{ frames: number }>(`/api/studio/projects/${id}/directions/${n}/storyboard`, { method: "POST" }),
   launch: (id: string) => request<NonNullable<StudioProject["launch"]>>(`/api/studio/projects/${id}/launch`, { method: "POST" }),
   downloadUrl: (designId: string) => `/api/studio/designs/${designId}/download`,
 };

@@ -47,7 +47,7 @@ const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().s
 
 const id = await studio.create({
   workspaceId: "ws_keel", brandId: "brand_studio_e2e", accountId: ACCOUNT, name: "Monsoon launch", userId: "user_demo_owner",
-  brief: { productName: "Monsoon Jacket", productUrl: "https://northline.test/jacket", productPhotos: [productRef], referenceImages: [], price: "₹3,499", offer: "", audience: "Commuters in Mumbai", countries: ["IN"], ageMin: 22, ageMax: 45, dailyBudget: 500, startDate: day(1), endDate: day(14), notes: "" },
+  brief: { productName: "Monsoon Jacket", productUrl: "https://northline.test/jacket", productPhotos: [productRef], referenceImages: [], price: "₹3,499", offer: "", audience: "Commuters in Mumbai", countries: ["IN"], ageMin: 22, ageMax: 45, dailyBudget: 500, startDate: day(1), endDate: day(14), notes: "", competitors: ["Decathlon"], competitorShots: [] },
 });
 for (let i = 0; i < 120; i++) {
   const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, id));
@@ -56,6 +56,13 @@ for (let i = 0; i < 120; i++) {
 }
 const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, id));
 assert.equal(p!.status, "ready", `status ${p!.status}: ${p!.error}`);
+const research = p!.research as { ads: unknown[]; insights: { whiteSpace: string[] } };
+assert.ok(research.ads.length >= 3, "research found competitor ads");
+assert.ok(research.insights.whiteSpace.length, "insights name open space");
+assert.ok((p!.log as unknown[]).length >= 5, "the agent logged its decisions");
+const dirs = p!.directions as { frames?: (string | null)[]; storyboard: { reel: unknown[] } }[];
+assert.equal(dirs[0]!.frames?.filter(Boolean).length, dirs[0]!.storyboard.reel.length, "storyboard frames drawn for the lead direction");
+console.log(`✓ researched ${research.ads.length} ads; ${(p!.log as unknown[]).length} agent log entries; ${dirs[0]!.frames!.length} storyboard frames`);
 const designs = await db.select().from(schema.studioDesigns).where(eq(schema.studioDesigns.projectId, id));
 assert.equal(designs.length, 9);
 assert.ok(designs.every((d) => d.renderRef));

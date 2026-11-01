@@ -109,10 +109,20 @@ export function studioRoutes(rt: Runtime) {
     return c.json({ ok: true });
   });
 
+  r.post("/projects/:id/directions/:n/storyboard", async (c) => {
+    const found = await projectFor(c.get("user").id, c.req.param("id"), true);
+    if (!found) return c.json({ error: "not found" }, 404);
+    try {
+      return c.json({ frames: await studio.drawStoryboard(found.p.id, Number(c.req.param("n"))) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 502);
+    }
+  });
+
   r.post("/projects/:id/retry", async (c) => {
     const found = await projectFor(c.get("user").id, c.req.param("id"), true);
     if (!found) return c.json({ error: "not found" }, 404);
-    await db.update(schema.studioProjects).set({ status: "drafting", error: null }).where(eq(schema.studioProjects.id, found.p.id));
+    await db.update(schema.studioProjects).set({ status: "drafting", error: null, log: [], steps: found.p.steps && (found.p.steps as { status: string }[]).map((s) => ({ ...s, status: "waiting", detail: undefined, ms: undefined })) }).where(eq(schema.studioProjects.id, found.p.id));
     void studio.run(found.p.id);
     return c.json({ ok: true }, 202);
   });

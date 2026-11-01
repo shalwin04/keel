@@ -66,8 +66,16 @@ export function NewCampaign() {
   const accounts = (me.data?.accounts ?? []).filter((a) => !a.isDemo && a.role !== "viewer");
   const [f, setF] = useState({
     accountId: "", name: "", productName: "", productUrl: "", price: "", offer: "", audience: "", countries: "IN",
-    ageMin: 18, ageMax: 65, dailyBudget: 500, startDate: day(1), endDate: day(15), notes: "",
+    ageMin: 18, ageMax: 65, dailyBudget: 500, startDate: day(1), endDate: day(15), notes: "", competitors: "",
   });
+  const [shots, setShots] = useState<{ ref: string; preview: string }[]>([]);
+  const shotInput = useRef<HTMLInputElement>(null);
+  const addShots = async (files: FileList | null) => {
+    for (const file of Array.from(files ?? []).slice(0, 12 - shots.length)) {
+      try { const { ref } = await studio.upload(file); setShots((xs) => [...xs, { ref, preview: URL.createObjectURL(file) }]); }
+      catch (e) { toast(e instanceof Error ? e.message : String(e), "error"); }
+    }
+  };
   const [photos, setPhotos] = useState<{ ref: string; preview: string }[]>([]);
   const [uploading, setUploading] = useState(0);
   const [over, setOver] = useState(false);
@@ -97,6 +105,7 @@ export function NewCampaign() {
         productName: f.productName, productUrl: f.productUrl, productPhotos: photos.map((p) => p.ref), referenceImages: [], price: f.price, offer: f.offer,
         audience: f.audience, countries: f.countries.split(/[\s,]+/).filter(Boolean).map((c) => c.toUpperCase()).slice(0, 25), ageMin: f.ageMin, ageMax: f.ageMax,
         dailyBudget: f.dailyBudget, startDate: f.startDate, endDate: f.endDate, notes: f.notes,
+        competitors: f.competitors.split(/[,\n]+/).map((c) => c.trim()).filter(Boolean).slice(0, 8), competitorShots: shots.map((s) => s.ref),
       },
     }),
     onSuccess: (r) => void navigate({ to: "/create/$id", params: { id: r.id } }),
@@ -109,7 +118,7 @@ export function NewCampaign() {
 
   return (
     <div className="max-w-3xl">
-      <PageHeader title="New campaign" subtitle="Keel's agent does the rest: three directions, scenes with your real product, every size, checked." />
+      <PageHeader title="New campaign" subtitle="Keel's agent does the rest: studies competitors, plans three directions and a storyboard, shoots and art-directs, lays out every size, checks it." />
       <div className="space-y-8">
         <section>
           <SectionTitle>Product</SectionTitle>
@@ -160,6 +169,29 @@ export function NewCampaign() {
               <Field label="Daily budget" hint="In the ad account's currency"><Input type="number" min={1} value={f.dailyBudget} onChange={(e) => set("dailyBudget", Number(e.target.value))} /></Field>
               <Field label="Start"><Input type="date" value={f.startDate} onChange={(e) => set("startDate", e.target.value)} /></Field>
               <Field label="End"><Input type="date" value={f.endDate} onChange={(e) => set("endDate", e.target.value)} /></Field>
+            </div>
+          </Card>
+        </section>
+
+        <section>
+          <SectionTitle>Competitors</SectionTitle>
+          <Card className="space-y-5 p-5">
+            <Field label="Who you compete with" hint="Brands or Facebook Page names, comma-separated. Optional: the agent finds more on its own.">
+              <Input value={f.competitors} onChange={(e) => set("competitors", e.target.value)} placeholder="Decathlon, Wildcraft, The North Face" />
+            </Field>
+            <div>
+              <span className="mb-1.5 block text-[13px] font-medium text-ink-2">Competitor ads you've seen</span>
+              <div className="flex flex-wrap gap-2">
+                {shots.map((x) => (
+                  <div key={x.ref} className="group relative h-20 w-16 animate-fade overflow-hidden rounded-lg bg-fill">
+                    <img src={x.preview} alt="" className="h-full w-full object-cover" />
+                    <button aria-label="Remove" onClick={() => setShots((xs) => xs.filter((y) => y.ref !== x.ref))} className="absolute top-1 right-1 hidden h-5 w-5 place-items-center rounded-full bg-black/60 text-white group-hover:grid"><IconX size={10} /></button>
+                  </div>
+                ))}
+                {shots.length < 12 && <button onClick={() => shotInput.current?.click()} className="press grid h-20 w-16 place-items-center rounded-lg bg-fill text-ink-2 hover:bg-fill-strong"><IconPlus size={18} /></button>}
+              </div>
+              <p className="mt-1.5 text-[13px] text-ink-3">Screenshots help most outside the EU, where Meta's Ad Library doesn't list ordinary ads.</p>
+              <input ref={shotInput} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={(e) => void addShots(e.target.files)} />
             </div>
           </Card>
         </section>

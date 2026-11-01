@@ -204,6 +204,8 @@ export const studioProjects = pgTable("studio_projects", {
   status: text("status").notNull(), // drafting | ready | launching | launched | failed
   steps: jsonb("steps").notNull(), // [{ key, label, status, detail, ms }]
   directions: jsonb("directions"),
+  research: jsonb("research"), // competitor ads + insights
+  log: jsonb("log"), // the agent's running commentary
   launch: jsonb("launch"), // { campaignId, adsetId, ads: [{ designId, adId, creativeId }] }
   error: text("error"),
   createdBy: text("created_by").notNull().references(() => users.id),

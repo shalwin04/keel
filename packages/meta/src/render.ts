@@ -36,3 +36,19 @@ export async function renderSvgToPng(svg: string, w: number, h: number): Promise
     idle.unref?.();
   }
 }
+
+/** Screenshots a web page (an Ad Library snapshot, say) as PNG. Waits for images; gives up after 25 s. */
+export async function captureUrl(url: string, o: { width?: number; height?: number } = {}): Promise<Buffer> {
+  const b = await getBrowser();
+  if (idle) clearTimeout(idle);
+  const page = (await b.newPage({ viewport: { width: o.width ?? 500, height: o.height ?? 900 }, deviceScaleFactor: 2 })) as Page & { goto(u: string, o?: object): Promise<unknown> };
+  try {
+    await page.goto(url, { waitUntil: "networkidle", timeout: 25_000 });
+    await page.waitForTimeout(500);
+    return await page.screenshot({ type: "png", fullPage: false });
+  } finally {
+    await page.close();
+    idle = setTimeout(() => { void browser?.then((x) => x.close()); browser = undefined; }, 120_000);
+    idle.unref?.();
+  }
+}

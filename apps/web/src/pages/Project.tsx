@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { adsManagerUrl, api, mediaUrl, studio, type StudioDesign, type StudioDirection, type StudioProjectDetail } from "../api.ts";
 import { IconArrowRight, IconCheck, IconChevron, IconLink, IconLock, IconRefresh, IconSparkle, IconX } from "../components/Icons.tsx";
 import { useToast } from "../components/Toast.tsx";
@@ -9,14 +9,18 @@ import { Button, Card, ErrorNote, Pill, Segmented, Skeleton, Spinner, cx } from 
 const SIZE_LABEL = { square: "1:1 Feed", portrait: "4:5 Feed", story: "9:16 Stories" } as const;
 const ORDER = ["square", "portrait", "story"] as const;
 
+type Tab = "designs" | "research" | "storyboard" | "log";
+
 export function Project({ id }: { id: string }) {
   const q = useQuery({
     queryKey: ["studio", "project", id], queryFn: () => studio.project(id),
     refetchInterval: (s) => (s.state.data && ["drafting", "launching"].includes(s.state.data.status) ? 2000 : false),
   });
+  const [tab, setTab] = useState<Tab>("designs");
   if (q.isLoading) return <Skeleton className="h-[480px]" />;
   if (q.isError || !q.data) return <ErrorNote error={q.error ?? "not found"} />;
   const p = q.data;
+  const drafting = p.status === "drafting" || (p.status === "failed" && !p.designs.length);
   return (
     <div>
       <Link to="/create" className="mb-3 inline-flex items-center gap-1 text-[14px] text-accent"><IconChevron size={14} className="rotate-180" /> Create</Link>
@@ -25,8 +29,13 @@ export function Project({ id }: { id: string }) {
           <h1 className="text-[28px] leading-tight font-semibold md:text-[32px]">{p.name}</h1>
           <p className="mt-1 text-ink-2">{p.brief.productName} · {p.brief.countries.join(", ")} · ages {p.brief.ageMin}–{p.brief.ageMax} · {p.brief.dailyBudget}/day</p>
         </div>
+        {!drafting && (
+          <Segmented label="View" value={tab} onChange={setTab} options={[
+            { value: "designs", label: "Designs" }, { value: "research", label: "Research" }, { value: "storyboard", label: "Storyboard" }, { value: "log", label: "Agent log" },
+          ]} />
+        )}
       </div>
-      {p.status === "drafting" || (p.status === "failed" && !p.designs.length) ? <Progress p={p} /> : <Board p={p} />}
+      {drafting ? <Progress p={p} /> : tab === "designs" ? <Board p={p} /> : tab === "research" ? <ResearchView p={p} /> : tab === "storyboard" ? <StoryboardView p={p} /> : <AgentLog p={p} />}
     </div>
   );
 }
@@ -35,25 +44,236 @@ function Progress({ p }: { p: StudioProjectDetail }) {
   const qc = useQueryClient();
   const retry = useMutation({ mutationFn: () => studio.retry(p.id), onSuccess: () => void qc.invalidateQueries({ queryKey: ["studio", "project", p.id] }) });
   return (
-    <Card className="max-w-2xl p-6">
-      <h2 className="mb-1 text-[20px] font-semibold">{p.status === "failed" ? "The agent hit a problem" : "Keel is making your ads"}</h2>
-      <p className="mb-6 text-[14px] text-ink-2">{p.status === "failed" ? "Nothing was launched. Try again, or change the brief." : "This takes a minute or two. You can leave this page; it keeps going."}</p>
-      <ol className="space-y-4">
-        {p.steps.map((s) => (
-          <li key={s.key} className="flex gap-3">
-            <span className={cx("mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full",
-              s.status === "done" ? "bg-ok text-white" : s.status === "failed" ? "bg-critical text-white" : s.status === "running" ? "bg-accent/15 text-accent" : "border-[1.5px] border-[var(--line)]")}>
-              {s.status === "done" ? <IconCheck size={14} strokeWidth={2.5} /> : s.status === "failed" ? <IconX size={14} strokeWidth={2.5} /> : s.status === "running" ? <Spinner className="h-3.5 w-3.5" /> : null}
-            </span>
-            <div className="min-w-0">
-              <div className={cx("font-medium", s.status === "waiting" && "text-ink-2")}>{s.label}</div>
-              {s.detail && <div className={cx("text-[13px]", s.status === "failed" ? "text-critical" : "text-ink-2")}>{s.detail}{s.ms ? ` · ${(s.ms / 1000).toFixed(1)} s` : ""}</div>}
-            </div>
-          </li>
-        ))}
-      </ol>
-      {p.status === "failed" && <div className="mt-6"><Button variant="primary" icon={<IconRefresh size={15} />} loading={retry.isPending} onClick={() => retry.mutate()}>Try again</Button></div>}
+    <div className="grid gap-6 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
+      <Card className="h-fit p-6">
+        <h2 className="mb-1 text-[20px] font-semibold">{p.status === "failed" ? "The agent hit a problem" : "Keel's agent is at work"}</h2>
+        <p className="mb-6 text-[14px] text-ink-2">{p.status === "failed" ? p.error ?? "Nothing was launched. Try again, or change the brief." : "A few minutes. You can leave; it keeps going."}</p>
+        <ol className="space-y-4">
+          {p.steps.map((s) => (
+            <li key={s.key} className="flex gap-3">
+              <span className={cx("mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full",
+                s.status === "done" ? "bg-ok text-white" : s.status === "failed" ? "bg-critical text-white" : s.status === "running" ? "bg-accent/15 text-accent" : "border-[1.5px] border-[var(--line)]")}>
+                {s.status === "done" ? <IconCheck size={14} strokeWidth={2.5} /> : s.status === "failed" ? <IconX size={14} strokeWidth={2.5} /> : s.status === "running" ? <Spinner className="h-3.5 w-3.5" /> : null}
+              </span>
+              <div className="min-w-0">
+                <div className={cx("font-medium", s.status === "waiting" && "text-ink-2")}>{s.label}</div>
+                {s.detail && <div className={cx("text-[13px]", s.status === "failed" ? "text-critical" : "text-ink-2")}>{s.detail}{s.ms ? ` · ${(s.ms / 1000).toFixed(1)} s` : ""}</div>}
+              </div>
+            </li>
+          ))}
+        </ol>
+        {p.status === "failed" && <div className="mt-6"><Button variant="primary" icon={<IconRefresh size={15} />} loading={retry.isPending} onClick={() => retry.mutate()}>Try again</Button></div>}
+      </Card>
+      <AgentLog p={p} live />
+    </div>
+  );
+}
+
+const STEP_NAME: Record<string, string> = { research: "Research", strategy: "Strategy", scenes: "Art direction", compose: "Layout", check: "Check", storyboard: "Storyboard" };
+
+function AgentLog({ p, live }: { p: StudioProjectDetail; live?: boolean }) {
+  const entries = [...(p.log ?? [])].reverse();
+  return (
+    <Card className="h-fit p-5">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-[16px] font-semibold">What the agent found and decided</h2>
+        {live && p.status === "drafting" && <span className="flex items-center gap-1.5 text-[12px] text-ink-2"><span className="h-1.5 w-1.5 animate-pulse-soft rounded-full bg-accent" /> live</span>}
+      </div>
+      {!entries.length ? <p className="text-[14px] text-ink-2">Starting…</p> : (
+        <ol className="max-h-[70vh] space-y-2.5 overflow-auto scroll-thin">
+          {entries.map((e, i) => (
+            <li key={`${e.at}${i}`} className={cx("flex gap-3 text-[14px]", i === 0 && live && "animate-enter")}>
+              <span className="w-24 shrink-0 text-[12px] leading-5 text-ink-3">{STEP_NAME[e.step] ?? e.step}</span>
+              <span className={cx("min-w-0", e.kind === "decision" ? "font-medium text-ink" : e.kind === "warn" ? "text-high" : "text-ink-2")}>{e.text}</span>
+            </li>
+          ))}
+        </ol>
+      )}
     </Card>
+  );
+}
+
+function ResearchView({ p }: { p: StudioProjectDetail }) {
+  const r = p.research;
+  if (!r) return <Card className="p-6 text-ink-2">No research for this campaign.</Card>;
+  const ins = r.insights;
+  const byId = new Map(r.ads.map((a) => [a.id, a]));
+  return (
+    <div className="space-y-8">
+      <Card className="p-6">
+        <p className="text-[12px] font-semibold text-ink-2">{r.ads.length} competitor ads · {new Set(r.ads.map((a) => a.pageName)).size} advertisers · searched {r.searchTerms.join(", ")}</p>
+        <p className="mt-2 text-[17px] leading-relaxed">{ins.summary}</p>
+        {r.note && <p className="mt-3 text-[13px] text-high">{r.note}</p>}
+      </Card>
+      <div className="grid gap-4 md:grid-cols-3">
+        <Card className="p-5">
+          <h3 className="mb-3 text-[13px] font-semibold text-ink-2">What everyone does</h3>
+          <ul className="space-y-3">
+            {ins.patterns.map((pt) => (
+              <li key={pt.label}>
+                <div className="flex items-baseline justify-between gap-2"><span className="font-medium">{pt.label}</span>{pt.count > 0 && <span className="text-[12px] text-ink-3">{pt.count} ads</span>}</div>
+                {pt.detail && <p className="text-[13px] text-ink-2">{pt.detail}</p>}
+                {pt.examples.length > 0 && (
+                  <div className="mt-1.5 flex gap-1.5">
+                    {pt.examples.map((id) => byId.get(id)?.snapshotRef && <img key={id} src={mediaUrl(byId.get(id)!.snapshotRef!)} alt="" className="h-10 w-8 rounded object-cover object-top" />)}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </Card>
+        <Card className="p-5">
+          <h3 className="mb-3 text-[13px] font-semibold text-ink-2">Overused</h3>
+          <ul className="space-y-2 text-[14px]">{ins.saturated.map((x) => <li key={x} className="flex gap-2"><IconX size={15} className="mt-0.5 shrink-0 text-ink-3" />{x}</li>)}</ul>
+          <h3 className="mt-5 mb-3 text-[13px] font-semibold text-ink-2">Open space for you</h3>
+          <ul className="space-y-2 text-[14px]">{ins.whiteSpace.map((x) => <li key={x} className="flex gap-2"><IconCheck size={15} className="mt-0.5 shrink-0 text-ok" />{x}</li>)}</ul>
+        </Card>
+        <Card className="p-5">
+          <h3 className="mb-3 text-[13px] font-semibold text-ink-2">Recommendations</h3>
+          <ol className="list-decimal space-y-2 pl-4 text-[14px]">{ins.recommendations.map((x) => <li key={x}>{x}</li>)}</ol>
+        </Card>
+      </div>
+      <div>
+        <h3 className="mb-3 px-1 text-[13px] font-semibold tracking-[0.04em] text-ink-2 uppercase">Competitor ads, longest-running first</h3>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+          {r.ads.map((a, i) => (
+            <Card key={a.id} className="animate-enter overflow-hidden" style={{ animationDelay: `${Math.min(i, 10) * 30}ms` }}>
+              <div className="aspect-[4/5] bg-fill">{a.snapshotRef && <img src={mediaUrl(a.snapshotRef)} alt={`Ad by ${a.pageName}`} loading="lazy" className="h-full w-full object-cover object-top" />}</div>
+              <div className="space-y-1.5 p-3">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="truncate text-[14px] font-medium">{a.pageName}</span>
+                  {a.daysRunning ? <span className="shrink-0 text-[12px] text-ink-3">{a.daysRunning} days</span> : a.source === "upload" ? <span className="text-[12px] text-ink-3">uploaded</span> : null}
+                </div>
+                {a.analysis && <p className="line-clamp-2 text-[13px] text-ink-2">{a.analysis.hook}</p>}
+                {a.analysis && <div className="flex flex-wrap gap-1"><Pill>{a.analysis.format}</Pill>{a.analysis.emotion && <Pill>{a.analysis.emotion}</Pill>}</div>}
+                {a.libraryUrl && <a href={a.libraryUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12px] text-accent"><IconLink size={12} /> Ad Library</a>}
+              </div>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StoryboardView({ p }: { p: StudioProjectDetail }) {
+  const dirs = p.directions ?? [];
+  const [n, setN] = useState(0);
+  const qc = useQueryClient();
+  const toast = useToast();
+  const d = dirs[n];
+  const draw = useMutation({
+    mutationFn: () => studio.storyboard(p.id, n),
+    onSuccess: (r) => { toast(`${r.frames} frames drawn`); void qc.invalidateQueries({ queryKey: ["studio", "project", p.id] }); },
+    onError: (e) => toast(e instanceof Error ? e.message : String(e), "error"),
+  });
+  if (!d) return null;
+  const frames = d.frames ?? [];
+  const reel = d.storyboard.reel;
+  const total = reel.reduce((t, s) => t + s.seconds, 0);
+  return (
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Segmented label="Direction" value={String(n)} onChange={(v) => setN(Number(v))} options={dirs.map((x, i) => ({ value: String(i), label: x.title }))} />
+        {p.role !== "viewer" && reel.length > 0 && (
+          <Button size="sm" icon={<IconSparkle size={14} />} loading={draw.isPending} onClick={() => draw.mutate()}>{frames.some(Boolean) ? "Redraw frames" : "Draw the frames"}</Button>
+        )}
+      </div>
+
+      {d.storyboard.beats.length > 0 && (
+        <section>
+          <h3 className="mb-3 px-1 text-[13px] font-semibold tracking-[0.04em] text-ink-2 uppercase">Campaign story</h3>
+          <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${Math.min(d.storyboard.beats.length, 4)}, minmax(0, 1fr))` }}>
+            {d.storyboard.beats.map((b, i) => (
+              <Card key={i} className="relative p-4">
+                <div className="mb-2 flex items-center gap-2"><span className="grid h-6 w-6 place-items-center rounded-full bg-accent text-[12px] font-semibold text-accent-ink">{i + 1}</span><span className="font-semibold">{b.name}</span><span className="ml-auto text-[12px] text-ink-3">{b.when}</span></div>
+                <p className="text-[14px] font-medium">"{b.message}"</p>
+                <p className="mt-1 text-[13px] text-ink-2">{b.goal}</p>
+                <p className="mt-2 text-[13px] text-ink-3">{b.visual}</p>
+              </Card>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {reel.length > 0 ? (
+        <section className="grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <div>
+            <h3 className="mb-3 px-1 text-[13px] font-semibold tracking-[0.04em] text-ink-2 uppercase">Animatic · {total.toFixed(0)} s</h3>
+            <Animatic frames={frames} reel={reel} fallback={d.sceneRef} accent={d.palette.accent} />
+          </div>
+          <div>
+            <h3 className="mb-3 px-1 text-[13px] font-semibold tracking-[0.04em] text-ink-2 uppercase">Reel shots</h3>
+            <ol className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {reel.map((s, i) => (
+                <li key={i}>
+                  <Card className="overflow-hidden">
+                    <div className="relative aspect-[9/12] bg-fill">
+                      {frames[i] ? <img src={mediaUrl(frames[i]!)} alt="" className="h-full w-full object-cover" /> : draw.isPending ? <Skeleton className="h-full rounded-none" /> : <div className="grid h-full place-items-center p-4 text-center text-[13px] text-ink-3">{s.visual}</div>}
+                      <span className="absolute top-2 left-2 rounded-full bg-black/60 px-2 py-0.5 text-[11px] font-medium text-white">{i + 1} · {s.seconds}s · {s.motion}</span>
+                    </div>
+                    <div className="p-3">
+                      {s.onScreenText && <p className="text-[14px] font-semibold">"{s.onScreenText}"</p>}
+                      <p className="mt-0.5 text-[13px] text-ink-2">{s.visual}</p>
+                    </div>
+                  </Card>
+                </li>
+              ))}
+            </ol>
+          </div>
+        </section>
+      ) : <Card className="p-6 text-ink-2">No Reel planned for this direction.</Card>}
+    </div>
+  );
+}
+
+/** Plays the storyboard as a moving preview: each frame with its camera move and on-screen text, cross-fading in time. */
+function Animatic({ frames, reel, fallback, accent }: { frames: (string | null)[]; reel: { seconds: number; onScreenText: string; motion: string }[]; fallback: string; accent: string }) {
+  const [playing, setPlaying] = useState(false);
+  const [at, setAt] = useState(0);
+  const total = reel.reduce((t, s) => t + s.seconds, 0);
+  useEffect(() => {
+    if (!playing) return;
+    const t0 = performance.now() - at * 1000;
+    let raf = 0;
+    const tick = (now: number) => {
+      const t = (now - t0) / 1000;
+      if (t >= total) { setAt(total); setPlaying(false); return; }
+      setAt(t);
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing]); // eslint-disable-line react-hooks/exhaustive-deps
+  let acc = 0;
+  const idx = Math.max(0, reel.findIndex((s) => (acc += s.seconds) > at));
+  const start = reel.slice(0, idx).reduce((t, s) => t + s.seconds, 0);
+  const local = Math.min(1, (at - start) / (reel[idx]?.seconds || 1));
+  const MOVE: Record<string, (k: number) => string> = {
+    "push-in": (k) => `scale(${1 + 0.12 * k})`, "pull-out": (k) => `scale(${1.12 - 0.12 * k})`,
+    "pan-left": (k) => `scale(1.12) translateX(${4 - 8 * k}%)`, "pan-right": (k) => `scale(1.12) translateX(${-4 + 8 * k}%)`, static: () => "scale(1.02)",
+  };
+  const shot = reel[idx];
+  return (
+    <div>
+      <div className="relative aspect-[9/16] overflow-hidden rounded-2xl bg-black shadow-[var(--shadow-pop)]">
+        {reel.map((s, i) => (
+          <img key={i} src={mediaUrl(frames[i] ?? fallback)} alt="" className="absolute inset-0 h-full w-full object-cover"
+            style={{ opacity: i === idx ? 1 : 0, transform: (MOVE[s.motion] ?? MOVE.static!)(i === idx ? local : 0), transition: "opacity 300ms var(--ease-out)" }} />
+        ))}
+        <div className="absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/70 to-transparent" />
+        {shot?.onScreenText && <p key={idx} className="absolute inset-x-5 bottom-14 animate-enter text-center text-[22px] leading-tight font-bold text-white drop-shadow">{shot.onScreenText}</p>}
+        <div className="absolute inset-x-3 top-3 flex gap-1">
+          {reel.map((s, i) => <div key={i} className="h-0.5 flex-1 overflow-hidden rounded-full bg-white/35"><div className="h-full bg-white" style={{ width: `${i < idx ? 100 : i === idx ? local * 100 : 0}%` }} /></div>)}
+        </div>
+        {!playing && (
+          <button aria-label="Play" onClick={() => { if (at >= total) setAt(0); setPlaying(true); }} className="press absolute inset-0 grid place-items-center">
+            <span className="grid h-14 w-14 place-items-center rounded-full bg-white/90 text-black shadow-lg"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l12-7z" /></svg></span>
+          </button>
+        )}
+      </div>
+      <div className="mt-2 flex justify-between text-[12px] text-ink-3"><span>{at.toFixed(1)} s</span><span style={{ color: accent }}>●</span><span>{total.toFixed(1)} s</span></div>
+    </div>
   );
 }
 
@@ -94,6 +314,7 @@ function DirectionRow({ p, d, index, designs, readOnly }: { p: StudioProjectDeta
             {d.productInScene && <Pill>Your product, placed by Muse Image</Pill>}
           </div>
           <p className="mt-1 text-[14px] text-ink-2">{d.angle}</p>
+          {d.rationale && <p className="mt-1 flex gap-1.5 text-[13px] text-accent"><IconSparkle size={13} className="mt-0.5 shrink-0" />{d.rationale}</p>}
         </div>
         {canEdit && (
           <div className="flex flex-wrap items-center gap-2">

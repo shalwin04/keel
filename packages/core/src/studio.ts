@@ -24,8 +24,59 @@ export const BriefSchema = z.object({
   startDate: z.string(),
   endDate: z.string(),
   notes: z.string().max(2000).default(""),
+  /** Competitor brands, Facebook Page names or URLs, or keywords the agent should research. */
+  competitors: z.array(z.string().max(120)).max(8).default([]),
+  /** Screenshots of competitor ads the person already has (used alongside, or instead of, the Ad Library). */
+  competitorShots: z.array(z.string()).max(12).default([]),
 });
 export type Brief = z.infer<typeof BriefSchema>;
+
+// ── Research ─────────────────────────────────────────────────────────────────
+
+export const AdAnalysisSchema = z.object({
+  format: z.string().max(80).catch(""),
+  hook: z.string().max(200).catch(""),
+  visual: z.string().max(300).catch(""),
+  palette: z.array(z.string()).max(6).catch([]),
+  offer: z.string().max(120).catch(""),
+  cta: z.string().max(60).catch(""),
+  emotion: z.string().max(80).catch(""),
+  strength: z.number().min(0).max(1).catch(0.5),
+});
+export type AdAnalysis = z.infer<typeof AdAnalysisSchema>;
+
+export interface CompetitorAd {
+  id: string;
+  source: "ad_library" | "upload";
+  pageName: string;
+  body?: string;
+  title?: string;
+  startedAt?: string;
+  stoppedAt?: string;
+  daysRunning?: number;
+  platforms?: string[];
+  snapshotRef?: string;
+  libraryUrl?: string;
+  analysis?: AdAnalysis;
+}
+
+export const InsightsSchema = z.object({
+  summary: z.string().max(800),
+  patterns: z.array(z.object({ label: z.string().max(120), detail: z.string().max(300).catch(""), count: z.number().int().min(0).catch(0), examples: z.array(z.string()).max(6).catch([]) })).max(8).catch([]),
+  saturated: z.array(z.string().max(200)).max(6).catch([]),
+  whiteSpace: z.array(z.string().max(200)).max(6).catch([]),
+  recommendations: z.array(z.string().max(240)).max(6).catch([]),
+});
+export type Insights = z.infer<typeof InsightsSchema>;
+
+export interface Research {
+  searchTerms: string[];
+  competitors: string[];
+  source: "ad_library" | "uploads" | "mixed" | "none";
+  note?: string;
+  ads: CompetitorAd[];
+  insights: Insights;
+}
 
 export const CTA_TYPES = ["SHOP_NOW", "LEARN_MORE", "SIGN_UP", "GET_OFFER", "ORDER_NOW", "SEE_MORE"] as const;
 const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
@@ -40,8 +91,30 @@ export const DirectionSchema = z.object({
   primaryText: z.string().max(280),
   cta: z.enum(CTA_TYPES).catch("SHOP_NOW"),
   palette: z.object({ base: hex, accent: hex, ink: hex }),
+  /** Which research insight this direction answers (shown so people can see the reasoning). */
+  rationale: z.string().max(300).catch(""),
+  /** The art director's brief for the hero image: what makes it look professionally shot. */
+  art: z.object({
+    camera: z.string().max(160).catch(""),
+    lighting: z.string().max(160).catch(""),
+    grade: z.string().max(160).catch(""),
+    composition: z.string().max(200).catch(""),
+    props: z.string().max(200).catch(""),
+    avoid: z.string().max(200).catch(""),
+  }).catch({ camera: "", lighting: "", grade: "", composition: "", props: "", avoid: "" }),
+  storyboard: z.object({
+    beats: z.array(z.object({ name: z.string().max(40), when: z.string().max(60).catch(""), goal: z.string().max(160).catch(""), message: z.string().max(160).catch(""), visual: z.string().max(240).catch("") })).max(5).catch([]),
+    reel: z.array(z.object({
+      seconds: z.number().min(0.5).max(8).catch(3),
+      visual: z.string().max(300),
+      onScreenText: z.string().max(60).catch(""),
+      motion: z.enum(["push-in", "pull-out", "pan-left", "pan-right", "static"]).catch("push-in"),
+      showsProduct: z.boolean().catch(true),
+    })).max(6).catch([]),
+  }).catch({ beats: [], reel: [] }),
 });
 export type Direction = z.infer<typeof DirectionSchema>;
+export type ReelShot = Direction["storyboard"]["reel"][number];
 
 // ── Layered design document ─────────────────────────────────────────────────
 
