@@ -226,3 +226,31 @@ export const studioDesigns = pgTable("studio_designs", {
   createdAt: ts("created_at").defaultNow().notNull(),
   updatedAt: ts("updated_at").defaultNow().notNull(),
 }, (t) => [index("studio_designs_project_idx").on(t.projectId)]);
+
+// ── Autopilot ────────────────────────────────────────────────────────────────
+
+/**
+ * A campaign run end to end from a website: read the site → research → craft (a Studio project) → launch on
+ * approval → learn from results on a schedule → propose moves (each approved by a person).
+ */
+export const autopilots = pgTable("autopilots", {
+  id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().references(() => workspaces.id),
+  brandId: text("brand_id").notNull().references(() => brands.id),
+  accountId: text("account_id").notNull(),
+  url: text("url").notNull(),
+  status: text("status").notNull(), // reading | crafting | ready | launching | live | stopped | failed
+  settings: jsonb("settings").notNull(), // { dailyBudget, maxDailyBudget, checkEveryHours, minImpressions }
+  site: jsonb("site"), // SiteCrawl (without page text)
+  profile: jsonb("profile"), // SiteProfile
+  projectId: text("project_id").references(() => studioProjects.id),
+  performance: jsonb("performance"), // PerformanceSnapshot[] (newest last)
+  learnings: jsonb("learnings"), // Learning[]
+  moves: jsonb("moves"), // Move[]
+  log: jsonb("log"),
+  nextCheckAt: ts("next_check_at"),
+  error: text("error"),
+  createdBy: text("created_by").notNull().references(() => users.id),
+  createdAt: ts("created_at").defaultNow().notNull(),
+  updatedAt: ts("updated_at").defaultNow().notNull(),
+}, (t) => [index("autopilots_ws_idx").on(t.workspaceId, t.createdAt), index("autopilots_due_idx").on(t.status, t.nextCheckAt)]);

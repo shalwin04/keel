@@ -52,3 +52,18 @@ export async function captureUrl(url: string, o: { width?: number; height?: numb
     idle.unref?.();
   }
 }
+
+/** A fresh page in the shared headless browser, closed afterwards. For crawling (site reading) and screenshots. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function withPage<T>(o: { width?: number; height?: number; scale?: number }, fn: (page: any) => Promise<T>): Promise<T> {
+  const b = await getBrowser();
+  if (idle) clearTimeout(idle);
+  const page = await b.newPage({ viewport: { width: o.width ?? 1280, height: o.height ?? 900 }, deviceScaleFactor: o.scale ?? 1, userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36 KeelBot/1.0" });
+  try {
+    return await fn(page);
+  } finally {
+    await page.close();
+    idle = setTimeout(() => { void browser?.then((x) => x.close()); browser = undefined; }, 120_000);
+    idle.unref?.();
+  }
+}

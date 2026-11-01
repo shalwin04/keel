@@ -1,4 +1,4 @@
-import { createRuntime, dueAccounts, sweep } from "@keel/agents";
+import { createMarketing, createRuntime, dueAccounts, sweep } from "@keel/agents";
 
 /**
  * The scheduler. Every minute: expire overdue approvals, then start a cycle for each account whose
@@ -13,6 +13,7 @@ const tickMs = Number(process.env.SCHEDULER_TICK_SEC ?? 60) * 1000;
 const maxParallel = Number(process.env.MAX_PARALLEL_CYCLES ?? 2);
 
 const rt = await createRuntime();
+const { autopilot } = createMarketing(rt);
 const log = (msg: string, extra: Record<string, unknown> = {}) => console.log(JSON.stringify({ at: new Date().toISOString(), svc: "keel-worker", msg, ...extra }));
 
 async function runOne(accountId: string) {
@@ -45,6 +46,11 @@ if (once) {
       const { expired } = await sweep(rt);
       if (expired) log("approvals expired", { count: expired });
       await runAll(only ? [only] : await dueAccounts(rt));
+      // Autopilot: read results and propose moves for campaigns whose check is due.
+      for (const id of await autopilot.due()) {
+        await autopilot.check(id).catch((err) => log("autopilot check failed", { id, error: String(err) }));
+        log("autopilot checked", { id });
+      }
     } catch (err) {
       log("tick failed", { error: String(err) });
     } finally {

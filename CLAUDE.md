@@ -33,6 +33,10 @@ npm run build          # web app → apps/web/dist (served by the API in product
 - `packages/meta` — Model API, Muse Image, SAM parser, Marketing API client, preview rendering, media store.
 - `packages/db` — Drizzle schema + migrations, audit chain, crypto, events, demo seed.
 
+## Autopilot (Create → paste a website)
+
+read site (`packages/meta/src/site.ts`: Playwright crawl, JSON-LD/Shopify products, logo, colours) → brand profile (Wonder) → brief → Studio run (research → strategy → art-directed scenes → layouts → checks → storyboard) → **launch on approval** (paused or on) → worker `autopilot.check()` every `AUTOPILOT_CHECK_HOURS`: insights → learnings (Wonder) → `planMoves()` (deterministic thresholds) → moves wait for approval (go live, pause ad, raise budget ≤ cap, new variant of the winner). Code: `packages/agents/src/autopilot.ts`, `apps/api/src/autopilot.ts`, `apps/web/src/pages/Autopilot.tsx`.
+
 ## Watch cycle
 
 ingest → detectDrift → screen → (inspect → investigate) → decide → (notify → requestApproval) → act → verify → learn

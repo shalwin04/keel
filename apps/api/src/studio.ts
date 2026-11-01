@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
 import { BriefSchema, DesignDocSchema, TEMPLATES } from "@keel/core";
-import { createStudio, fakeStudioModels, metaStudioModels, type createRuntime } from "@keel/agents";
+import { type createMarketing, type createRuntime } from "@keel/agents";
 import { schema } from "@keel/db";
 import { readMedia, saveMedia } from "@keel/meta";
 import { accessTo, accountsFor } from "./access.ts";
@@ -15,14 +15,8 @@ const PatchDesign = z.object({ doc: DesignDocSchema.optional(), picked: z.boolea
 const UPLOAD_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 /** Keel Studio API: make campaigns from a brief, edit the layered designs, launch paused with guardrails. */
-export function studioRoutes(rt: Runtime) {
+export function studioRoutes(rt: Runtime, { studio }: ReturnType<typeof createMarketing>) {
   const { db } = rt;
-  const studio = createStudio({
-    db,
-    models: process.env.STUDIO_FAKE_MODELS === "1" ? fakeStudioModels() : metaStudioModels(),
-    audit: rt.audit,
-    adsFor: rt.adsFor,
-  });
   const r = new Hono<AppEnv>();
 
   async function projectFor(userId: string, id: string, write = false) {

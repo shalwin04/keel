@@ -1,4 +1,4 @@
-import type { Brief, CompetitorAd, DesignDoc, Direction, Insights, ReelShot } from "@keel/core/studio";
+import type { Brief, CompetitorAd, DesignDoc, Direction, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile } from "@keel/core/studio";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Role = "owner" | "reviewer" | "viewer";
 
@@ -127,7 +127,7 @@ export const ACTION_LABEL: Record<string, string> = {
 };
 
 // ── Studio ───────────────────────────────────────────────────────────────────
-export type { Brief, CompetitorAd, DesignDoc, Direction, Insights, ReelShot };
+export type { Brief, CompetitorAd, DesignDoc, Direction, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile };
 export interface StudioStep { key: string; label: string; status: "waiting" | "running" | "done" | "failed" | "skipped"; detail?: string; ms?: number }
 export interface StudioLog { at: string; step: string; text: string; kind: "info" | "decision" | "warn" }
 export interface StudioResearch { searchTerms: string[]; competitors: string[]; source: string; note?: string; ads: CompetitorAd[]; insights: Insights }
@@ -166,3 +166,36 @@ export const studio = {
 };
 export const adsManagerUrl = (accountId: string, campaignId?: string) =>
   `https://adsmanager.facebook.com/adsmanager/manage/${campaignId ? "adsets" : "campaigns"}?act=${accountId.replace("act_", "")}${campaignId ? `&selected_campaign_ids=${campaignId}` : ""}`;
+
+// ── Autopilot ────────────────────────────────────────────────────────────────
+
+export type AutopilotStatus = "reading" | "crafting" | "ready" | "launching" | "live" | "stopped" | "failed";
+export interface AutopilotSummary { id: string; url: string; status: AutopilotStatus; accountId: string; createdAt: string; error: string | null; brand: string | null; logoRef: string | null; pending: number; covers: (string | null)[] }
+export interface SiteInfo {
+  url: string; origin: string; title: string; description: string; siteName: string; themeColor?: string; colors: string[]; fonts: string[];
+  logoRef?: string; shareImageRef?: string; screenshotRef: string; platform?: string; pagesRead: number;
+  products: { name: string; url: string; price?: string; currency?: string; description?: string; imageRefs: string[] }[];
+}
+export interface AutopilotDetail {
+  id: string; url: string; status: AutopilotStatus; accountId: string; role: Role; error: string | null; createdAt: string; nextCheckAt: string | null;
+  settings: { dailyBudget: number; maxDailyBudget: number; checkEveryHours: number; minImpressions: number };
+  site: SiteInfo | null; profile: SiteProfile | null; performance: PerformanceSnapshot[] | null; learnings: Learning[] | null; moves: Move[] | null;
+  log: { at: string; stage: string; text: string; kind: "info" | "decision" | "warn" }[] | null;
+  project: null | {
+    id: string; name: string; status: StudioProject["status"]; steps: StudioStep[]; error: string | null; brief: Brief; log: StudioLog[] | null;
+    launch: (NonNullable<StudioProject["launch"]> & { active?: boolean; currency?: string }) | null;
+    research: { insights: Insights; ads: number } | null;
+    directions: { title: string; angle: string; hook: string; headline: string; rationale?: string; palette: { base: string; accent: string; ink: string } }[];
+    designs: { id: string; direction: number; size: string; renderRef: string | null; picked: boolean; check: StudioDesign["check"] }[];
+  };
+}
+export const autopilot = {
+  list: () => request<AutopilotSummary[]>("/api/autopilot"),
+  get: (id: string) => request<AutopilotDetail>(`/api/autopilot/${id}`),
+  start: (b: { accountId: string; url: string; dailyBudget: number; maxDailyBudget?: number }) => request<{ id: string }>("/api/autopilot", { method: "POST", body: JSON.stringify(b) }),
+  launch: (id: string, live: boolean) => request(`/api/autopilot/${id}/launch`, { method: "POST", body: JSON.stringify({ live }) }),
+  check: (id: string) => request(`/api/autopilot/${id}/check`, { method: "POST" }),
+  decide: (id: string, moveId: string, approve: boolean) => request(`/api/autopilot/${id}/moves/${moveId}`, { method: "POST", body: JSON.stringify({ approve }) }),
+  stop: (id: string, stop: boolean) => request(`/api/autopilot/${id}/${stop ? "stop" : "resume"}`, { method: "POST" }),
+  retry: (id: string) => request(`/api/autopilot/${id}/retry`, { method: "POST" }),
+};

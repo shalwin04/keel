@@ -1,9 +1,9 @@
 import { z } from "zod";
 import {
-  AdAnalysisSchema, DirectionSchema, InsightsSchema,
-  type AdAnalysis, type Brief, type CompetitorAd, type Direction, type Insights, type ReelShot, type Rulebook,
+  AdAnalysisSchema, DirectionSchema, InsightsSchema, LearnSchema, SiteProfileSchema,
+  type AdAnalysis, type Learn, type PerformanceSnapshot, type SiteProfile, type Brief, type CompetitorAd, type Direction, type Insights, type ReelShot, type Rulebook,
 } from "@keel/core";
-import { callJson, config, editImage, generateImage, metaClient, renderSvgToPng, type ImageInput, type ModelCallInfo } from "@keel/meta";
+import { callJson, config, editImage, generateImage, metaClient, renderSvgToPng, type ImageInput, type ModelCallInfo, type SiteCrawl } from "@keel/meta";
 import { rulebookBlock } from "../prompts.ts";
 
 export type StudioCall = (info: ModelCallInfo & { step: string }) => void;
@@ -23,6 +23,10 @@ export interface StudioModels {
   refineScene(image: ImageInput, fix: string, brief: Brief): Promise<Buffer>;
   storyboardFrame(shot: ReelShot, direction: Direction, brief: Brief, product: ImageInput[]): Promise<Buffer>;
   critique(design: ImageInput, product: ImageInput, direction: Direction, rulebook?: Rulebook): Promise<{ pass: boolean; score: number; issues: string[] }>;
+  /** Autopilot: who the brand is, who it sells to and which product to lead with, from its website. */
+  readSite(site: SiteCrawl, images: ImageInput[]): Promise<SiteProfile>;
+  /** Autopilot: what the campaign's results say, and one new idea built on what's working. */
+  learn(o: { brand: string; product: string; directions: Direction[]; perf: PerformanceSnapshot; history: { at: string; summary: string }[]; insights?: Insights }): Promise<Learn>;
 }
 
 // ── prompts ──────────────────────────────────────────────────────────────────
@@ -72,6 +76,25 @@ Image 1 is the REAL product photo. Image 2 is the finished ad.
 Check: the product in the ad is the same product (shape, colour, logo) and is not distorted or cropped badly; all text is legible
 and correctly spelled; nothing breaks the brand rulebook; the background contains no stray text, logos or people that weren't asked for.
 JSON: {"pass": boolean, "score": number 0-1 (1 = ready to launch), "issues": [short plain-English strings]}`;
+
+const READ_SITE = `You are a brand strategist on day one with a new client. You get their website: a screenshot of the homepage
+(image 1), product photos (the next images, numbered from 0 in the product list), and the text, colours and fonts Keel read from the page.
+Work out: the brand (name exactly as the site writes it, a one-line positioning, its voice in a sentence, up to 4 values, and a palette for ads:
+base = background, accent = the brand's action colour, ink = text readable on base, all hex, taken from the site), the category,
+the most likely audience (summary, age range, up to 3 countries as ISO codes, from the currency, language, shipping and domain),
+which product to lead the first campaign with (heroProduct = its index in the list) and why, 3-5 competitors that advertise in this
+category in that market, any offer the site is running right now (exactly as written, or empty), the campaign goal, and notes for the
+creative team (what to keep, what to avoid). Never invent prices or offers.
+JSON: {"brand":{"name","oneLiner","voice","values":[],"palette":{"base","accent","ink"}},"category","audience":{"summary","ageMin","ageMax","countries":[]},"heroProduct","heroWhy","competitors":[],"offer","goal","notes"}`;
+
+const LEARN = `You are the performance strategist on a Meta campaign Keel is running. Each ad is one creative direction.
+Read the lifetime results (impressions, link clicks, CTR %, CPC, spend, frequency). Explain in plain English what is working and why,
+grounded in the directions' angles and hooks (not just numbers). Say which direction is winning (index) and how confident you are:
+low under ~1,000 impressions per ad or when the gap is small, high when the gap is large and the volume is real.
+Write up to 4 short, specific learnings. If one direction is clearly ahead, propose ONE new direction (nextIdea) that keeps what makes it work
+and tests one new idea (a sharper hook, a new scene, a different proof point); basedOn = the winner's index. Otherwise nextIdea = null.
+Never invent claims, prices or offers.
+JSON: {"summary","winner": number|null,"confidence":"low"|"medium"|"high","learnings":[string],"nextIdea": {"basedOn","title","angle","hook","headline","subline","primaryText","scenePrompt","why"}|null}`;
 
 const shotPrompt = (d: Direction, extra = "") => [
   d.scenePrompt,
@@ -152,6 +175,19 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
     critique: (design, product, direction, rulebook) => call("check", config.models.spark, CRITIQUE_SYSTEM,
       z.object({ pass: z.boolean(), score: z.number().min(0).max(1), issues: z.array(z.string()).default([]) }),
       `Direction: ${direction.title}. Headline: "${direction.headline}".\n${rulebookBlock(rulebook)}\nImage 1 = REAL PRODUCT, Image 2 = FINISHED AD.`, [product, design]),
+
+    readSite: (site, images) => call("site", config.models.wonder, READ_SITE, SiteProfileSchema,
+      [`URL: ${site.url}`, `Title: ${site.title}`, `Site name: ${site.siteName}`, `Description: ${site.description}`, site.lang && `Language: ${site.lang}`,
+        `Colours seen (most used first): ${site.colors.join(", ")}${site.themeColor ? ` · theme ${site.themeColor}` : ""}`, `Fonts: ${site.fonts.join(", ")}`,
+        `Navigation: ${site.nav.join(" | ")}`, `Headings: ${site.headings.join(" | ")}`,
+        `Products:\n${site.products.map((p, i) => `${i}. ${p.name}${p.price ? ` — ${p.currency ?? ""} ${p.price}` : ""}${p.description ? ` — ${p.description.slice(0, 160)}` : ""}`).join("\n") || "none found"}`,
+        `Page text:\n${site.text.slice(0, 3500)}`].filter(Boolean).join("\n"), images.slice(0, 5), "high"),
+
+    learn: (o) => call("learn", config.models.wonder, LEARN, LearnSchema,
+      [`Brand: ${o.brand}. Product: ${o.product}.`, "Directions:", ...o.directions.map((d, i) => `${i}. ${d.title} — angle: ${d.angle} — hook: ${d.hook} — headline: "${d.headline}"`),
+        `Results (${o.perf.currency}):`, ...o.perf.ads.map((a) => `direction ${a.direction} (${a.title}, ${a.status}): ${a.impressions} impressions, ${a.clicks} link clicks, CTR ${a.ctr.toFixed(2)}%, CPC ${a.cpc.toFixed(2)}, spend ${a.spend.toFixed(2)}, frequency ${a.frequency.toFixed(2)}`),
+        o.history.length ? `Earlier reads:\n${o.history.slice(-3).map((h) => `${h.at.slice(0, 10)}: ${h.summary}`).join("\n")}` : "",
+        o.insights ? `Competitor insights: ${o.insights.summary}` : ""].filter(Boolean).join("\n"), [], "high"),
   };
 }
 
@@ -203,6 +239,27 @@ export function fakeStudioModels(): StudioModels {
     },
     async critique() {
       return { pass: true, score: 0.92, issues: [] };
+    },
+    async readSite(site) {
+      const name = site.siteName || "Northline";
+      return {
+        brand: { name, oneLiner: `${name} makes weather-ready outerwear for city life.`, voice: "Calm, practical, quietly confident. Short sentences, no hype.", values: ["Built to last", "Honest materials", "City-first"], palette: { base: "#0f2a3d", accent: site.colors.find((c) => c !== "#ffffff" && c !== "#000000") ?? "#e0a23b", ink: "#f4efe6" } },
+        category: "Rainwear and outerwear", audience: { summary: "Urban commuters 22-40 who walk or take transit through the monsoon", ageMin: 22, ageMax: 40, countries: ["IN"] },
+        heroProduct: 0, heroWhy: "The flagship product, featured first on the homepage, with the clearest photos.", competitors: ["Decathlon", "Wildcraft"], offer: "", goal: "Drive visits to the product page", notes: "Lead with the product; keep copy short.",
+      };
+    },
+    async learn(o) {
+      const ranked = [...o.perf.ads].filter((a) => a.impressions > 0).sort((a, b) => b.ctr - a.ctr);
+      const best = ranked[0];
+      const enough = ranked.length > 1 && ranked.every((a) => a.impressions >= 1000);
+      const lead = best && enough && best.ctr >= (ranked[1]?.ctr ?? 0) * 1.3;
+      const dir = best ? o.directions[best.direction] : undefined;
+      return {
+        summary: !ranked.length ? "No delivery yet, so nothing to learn." : lead ? `"${best!.title}" is clearly ahead: ${best!.ctr.toFixed(2)}% CTR against ${ranked[1]!.ctr.toFixed(2)}%. Its hook speaks to a moment people recognise.` : "Too early to call: the directions are close or still gathering impressions.",
+        winner: lead ? best!.direction : null, confidence: lead ? "high" : "low",
+        learnings: lead ? [`${best!.title}'s everyday-moment hook beats aspirational scenes`, "Short headlines with one concrete benefit get more clicks", ...(ranked.some((a) => a.frequency > 3) ? ["Frequency is climbing; a fresh variant will keep costs down"] : [])] : ["Waiting for at least 1,000 impressions per ad"],
+        nextIdea: lead && dir ? { basedOn: best!.direction, title: `${dir.title} · night`, angle: dir.angle, hook: "Late train, still dry.", headline: "Late train. Still dry.", subline: dir.subline, primaryText: dir.primaryText, scenePrompt: `${dir.scenePrompt}, at night under sodium street lights`, why: "Same winning commute angle, new moment: the ride home." } : null,
+      };
     },
   };
 }

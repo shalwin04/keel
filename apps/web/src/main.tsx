@@ -10,6 +10,7 @@ import { Audit } from "./pages/Audit.tsx";
 import { Create, NewCampaign } from "./pages/Create.tsx";
 import { Editor } from "./pages/Editor.tsx";
 import { Project } from "./pages/Project.tsx";
+import { Autopilot } from "./pages/Autopilot.tsx";
 import { Login } from "./pages/Login.tsx";
 import { Onboarding } from "./pages/Onboarding.tsx";
 import { Review } from "./pages/Review.tsx";
@@ -44,6 +45,10 @@ const editorRoute = createRoute({
   getParentRoute: () => shellRoute, path: "/create/$id/edit/$designId",
   component: function EditorPage() { const { id, designId } = editorRoute.useParams(); return <Editor id={id} designId={designId} />; },
 });
+const autopilotRoute = createRoute({
+  getParentRoute: () => shellRoute, path: "/autopilot/$id",
+  component: function AutopilotPage() { const { id } = autopilotRoute.useParams(); return <Autopilot id={id} />; },
+});
 const onboardingRoute = createRoute({ getParentRoute: () => shellRoute, path: "/onboarding", component: Onboarding });
 // Old links keep working.
 const traceRedirect = createRoute({ getParentRoute: () => rootRoute, path: "/trace", beforeLoad: () => { throw redirect({ to: "/activity" }); } });
@@ -52,7 +57,7 @@ const accountsRedirect = createRoute({ getParentRoute: () => rootRoute, path: "/
 const router = createRouter({
   routeTree: rootRoute.addChildren([
     loginRoute, traceRedirect, accountsRedirect,
-    shellRoute.addChildren([createRoute_, newCampaignRoute, projectRoute, editorRoute, reviewRoute, reviewItemRoute, activityRoute, adsRoute, rulesRoute, auditRoute, settingsRoute, onboardingRoute]),
+    shellRoute.addChildren([createRoute_, autopilotRoute, newCampaignRoute, projectRoute, editorRoute, reviewRoute, reviewItemRoute, activityRoute, adsRoute, rulesRoute, auditRoute, settingsRoute, onboardingRoute]),
   ]),
   defaultPreload: "intent",
 });

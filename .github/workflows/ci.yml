@@ -29,4 +29,5 @@ jobs:
       - run: npm run test:e2e
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e:studio
+      - run: npm run test:e2e:autopilot
         env: { MEDIA_DIR: /tmp/keel-media }

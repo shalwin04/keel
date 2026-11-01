@@ -28,6 +28,10 @@ export const BriefSchema = z.object({
   competitors: z.array(z.string().max(120)).max(8).default([]),
   /** Screenshots of competitor ads the person already has (used alongside, or instead of, the Ad Library). */
   competitorShots: z.array(z.string()).max(12).default([]),
+  /** The brand name to show (Autopilot reads it from the website); defaults to the workspace's brand. */
+  brand: z.string().max(80).optional(),
+  /** The brand's logo (saved image ref); used on designs instead of the brand name. */
+  logoRef: z.string().optional(),
 });
 export type Brief = z.infer<typeof BriefSchema>;
 
@@ -173,8 +177,16 @@ export function compose(i: ComposeInput): DesignDoc {
   const add = <T extends Layer>(l: T) => { layers.push(l); return l; };
   const cta = (x: number, y: number, color = p.base, bg = p.accent) => add({ id: "cta", kind: "text", role: "cta", text: CTA_LABEL[i.direction.cta], x, y, w: 300 * s, h: 88 * s,
     size: 34 * s, weight: 700, color, align: "center", font: "sans", uppercase: false, tracking: 0, bg, radius: 44 * s, padX: 0, lineHeight: 88 * s / (34 * s), locked: false });
-  const brand = (x: number, y: number, color: string, align: "left" | "center" = "left", width = 500 * s) => add({ id: "brand", kind: "text", role: "brand", text: i.brand, x, y, w: width, h: 40 * s,
-    size: 26 * s, weight: 700, color, align, font: "sans", uppercase: true, tracking: 0.28, radius: 0, padX: 0, lineHeight: 1.2, locked: false });
+  const brand = (x: number, y: number, color: string, align: "left" | "center" = "left", width = 500 * s) => {
+    if (i.logoRef) {
+      // The real logo on a small white chip, so it reads on any background.
+      const lw = 210 * s, lh = 64 * s, lx = align === "center" ? x + (width - lw) / 2 : x, ly = y - 12 * s;
+      add({ id: "logo-chip", kind: "rect", role: "chip", x: lx, y: ly, w: lw, h: lh, fill: "#ffffff", angle: 180, radius: 16 * s, opacity: 0.96, shadow: false, locked: false });
+      return add({ id: "brand", kind: "image", role: "logo", ref: i.logoRef, x: lx + 18 * s, y: ly + 10 * s, w: lw - 36 * s, h: lh - 20 * s, fit: "contain", radius: 0, shadow: false, opacity: 1, locked: false });
+    }
+    return add({ id: "brand", kind: "text", role: "brand", text: i.brand, x, y, w: width, h: 40 * s,
+      size: 26 * s, weight: 700, color, align, font: "sans", uppercase: true, tracking: 0.28, radius: 0, padX: 0, lineHeight: 1.2, locked: false });
+  };
   const price = (x: number, y: number, color: string, bg?: string) => i.price ? add({ id: "price", kind: "text", role: "price", text: i.price, x, y, w: 260 * s, h: 64 * s,
     size: 38 * s, weight: 700, color, align: "center", font: "sans", uppercase: false, tracking: 0, bg, radius: 32 * s, padX: 0, lineHeight: 64 / 38, locked: false }) : undefined;
   const offer = (x: number, y: number) => i.offer ? add({ id: "offer", kind: "text", role: "offer", text: i.offer, x, y, w: 420 * s, h: 56 * s,
@@ -285,4 +297,63 @@ export function relayout(doc: DesignDoc, input: Omit<ComposeInput, "template" | 
   const next = compose({ ...input, template: to.template ?? doc.template, size: to.size ?? doc.size });
   const texts = new Map(doc.layers.filter((l) => l.kind === "text").map((l) => [l.id, (l as Extract<Layer, { kind: "text" }>).text]));
   return { ...next, layers: next.layers.map((l) => (l.kind === "text" && texts.has(l.id) ? { ...l, text: texts.get(l.id)! } : l)) };
+}
+
+// ── Autopilot: from a website to a running, learning campaign ───────────────
+
+/** What the agent concluded about a brand from its website. */
+export const SiteProfileSchema = z.object({
+  brand: z.object({
+    name: z.string().max(80),
+    oneLiner: z.string().max(200).catch(""),
+    voice: z.string().max(300).catch(""),
+    values: z.array(z.string().max(80)).max(6).catch([]),
+    palette: z.object({ base: hex, accent: hex, ink: hex }).catch({ base: "#ffffff", accent: "#0071e3", ink: "#111111" }),
+  }),
+  category: z.string().max(120).catch(""),
+  audience: z.object({
+    summary: z.string().max(400).catch(""),
+    ageMin: z.number().int().min(18).max(65).catch(18),
+    ageMax: z.number().int().min(18).max(65).catch(65),
+    countries: z.array(z.string().length(2)).min(1).max(5).catch(["IN"]),
+  }),
+  heroProduct: z.number().int().min(0).catch(0),
+  heroWhy: z.string().max(300).catch(""),
+  competitors: z.array(z.string().max(80)).max(6).catch([]),
+  offer: z.string().max(80).catch(""),
+  goal: z.string().max(200).catch(""),
+  notes: z.string().max(600).catch(""),
+});
+export type SiteProfile = z.infer<typeof SiteProfileSchema>;
+
+export interface AdPerformance {
+  adId: string; direction: number; title: string; status: string;
+  impressions: number; reach: number; clicks: number; ctr: number; cpc: number; spend: number; frequency: number;
+}
+export interface PerformanceSnapshot { at: string; currency: string; ads: AdPerformance[]; totals: { impressions: number; clicks: number; spend: number; ctr: number } }
+
+/** What the agent took away from one look at the numbers. */
+export const LearnSchema = z.object({
+  summary: z.string().max(600),
+  winner: z.number().int().nullable().catch(null),
+  confidence: z.enum(["low", "medium", "high"]).catch("low"),
+  learnings: z.array(z.string().max(240)).max(6).catch([]),
+  nextIdea: z.object({
+    basedOn: z.number().int().min(0),
+    title: z.string().max(60), angle: z.string().max(240), hook: z.string().max(120),
+    headline: z.string().max(60), subline: z.string().max(90), primaryText: z.string().max(280), scenePrompt: z.string().max(800),
+    why: z.string().max(300).catch(""),
+  }).nullable().catch(null),
+});
+export type Learn = z.infer<typeof LearnSchema>;
+export type Learning = Learn & { at: string; impressions: number };
+
+export const MOVE_KINDS = ["go_live", "pause_ad", "scale_budget", "new_variant"] as const;
+export type MoveKind = (typeof MOVE_KINDS)[number];
+/** A change the agent wants to make to the live campaign. Nothing that spends or changes a live ad runs without approval. */
+export interface Move {
+  id: string; kind: MoveKind; title: string; why: string;
+  params: { adId?: string; direction?: number; dailyBudget?: number; idea?: NonNullable<Learn["nextIdea"]> };
+  status: "pending" | "running" | "done" | "dismissed" | "failed";
+  createdAt: string; decidedAt?: string; decidedBy?: string; result?: string;
 }

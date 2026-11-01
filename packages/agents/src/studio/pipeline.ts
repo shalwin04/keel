@@ -29,6 +29,11 @@ export const STUDIO_LOCKED_FEATURES = [
   "site_extensions", "product_extensions", "pac_recomposition", "video_auto_crop",
 ];
 
+export interface LaunchedAd { designId: string; direction: number; adId: string; creativeId: string }
+export interface LaunchInfo { campaignId: string; adsetId: string; pageId: string; ads: LaunchedAd[]; at: string; currency?: string; minor?: number; active?: boolean; dailyBudget?: number }
+
+const lockedFeatures = (rulebook?: Rulebook) => Object.fromEntries([...new Set([...STUDIO_LOCKED_FEATURES, ...(rulebook?.lockedEnhancements ?? [])])].map((k) => [k, "OPT_OUT"]));
+
 export interface StudioDeps {
   db: Db;
   models: StudioModels;
@@ -111,11 +116,11 @@ export function createStudio(d: StudioDeps) {
     return fallback === "split" ? "split" : "hero";
   }
 
-  async function brandContext(brandId: string): Promise<{ name: string; rulebook?: Rulebook }> {
+  async function brandContext(brandId: string, brief?: Brief): Promise<{ name: string; rulebook?: Rulebook }> {
     const [b] = await db.select().from(schema.brands).where(eq(schema.brands.id, brandId));
     const [rb] = await db.select().from(schema.rulebooks).where(eq(schema.rulebooks.brandId, brandId)).orderBy(desc(schema.rulebooks.version)).limit(1);
     const parsed = rb ? RulebookSchema.safeParse(rb.rules) : undefined;
-    return { name: b?.name ?? "Brand", rulebook: parsed?.success ? parsed.data : undefined };
+    return { name: brief?.brand || b?.name || "Brand", rulebook: parsed?.success ? parsed.data : undefined };
   }
 
   async function renderDesign(doc: DesignDoc): Promise<string> {
@@ -126,7 +131,7 @@ export function createStudio(d: StudioDeps) {
   }
 
   function composeInput(brief: Brief, brand: string, direction: Direction, sceneRef: string, productInScene = false) {
-    return { sceneRef, productRef: brief.productPhotos[0]!, brand, direction, price: brief.price || undefined, offer: brief.offer || undefined, productInScene };
+    return { sceneRef, productRef: brief.productPhotos[0]!, brand, direction, price: brief.price || undefined, offer: brief.offer || undefined, productInScene, logoRef: brief.logoRef };
   }
 
   /**
@@ -137,7 +142,7 @@ export function createStudio(d: StudioDeps) {
     const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
     if (!p) return;
     const brief = BriefSchema.parse(p.brief);
-    const { name: brand, rulebook } = await brandContext(p.brandId);
+    const { name: brand, rulebook } = await brandContext(p.brandId, brief);
     const product = await Promise.all(brief.productPhotos.slice(0, 3).map(imageInput));
     try {
       const research = await timed(projectId, "research", async () => {
@@ -233,7 +238,7 @@ export function createStudio(d: StudioDeps) {
     const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
     if (!p) throw new Error("not found");
     const brief = BriefSchema.parse(p.brief);
-    const { name: brand } = await brandContext(p.brandId);
+    const { name: brand } = await brandContext(p.brandId, brief);
     const dirs = (p.directions ?? []) as DirRow[];
     const dir = dirs[direction];
     if (!dir) throw new Error("no such direction");
@@ -268,7 +273,7 @@ export function createStudio(d: StudioDeps) {
     const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
     if (!p) throw new Error("not found");
     const brief = BriefSchema.parse(p.brief);
-    const { name: brand } = await brandContext(p.brandId);
+    const { name: brand } = await brandContext(p.brandId, brief);
     const dir = ((p.directions ?? []) as (Direction & { sceneRef: string; productInScene?: boolean })[])[direction]!;
     const designs = await db.select().from(schema.studioDesigns).where(and(eq(schema.studioDesigns.projectId, projectId), eq(schema.studioDesigns.direction, direction)));
     for (const des of designs) {
@@ -292,7 +297,7 @@ export function createStudio(d: StudioDeps) {
     if (!perDirection.length) throw new Error("pick at least one design to launch");
     await db.update(schema.studioProjects).set({ status: "launching", error: null }).where(eq(schema.studioProjects.id, projectId));
     const ads = await d.adsFor(p.accountId);
-    const { rulebook } = await brandContext(p.brandId);
+    const { rulebook } = await brandContext(p.brandId, brief);
     try {
       const [page] = await ads.promotePages(p.accountId);
       if (!page) throw new Error("This ad account has no Facebook Page it can advertise as. Connect a Page in Business settings.");
@@ -304,24 +309,12 @@ export function createStudio(d: StudioDeps) {
         dailyBudgetMinor: brief.dailyBudget * minor, countries: brief.countries, ageMin: brief.ageMin, ageMax: brief.ageMax,
         start: new Date(brief.startDate).toISOString(), end: new Date(brief.endDate).toISOString(),
       });
-      const locked = Object.fromEntries([...new Set([...STUDIO_LOCKED_FEATURES, ...(rulebook?.lockedEnhancements ?? [])])].map((k) => [k, "OPT_OUT"]));
-      const made: { designId: string; direction: number; adId: string; creativeId: string }[] = [];
+      const made: LaunchedAd[] = [];
       for (const dirIdx of perDirection) {
         const design = picked.find((x) => x.direction === dirIdx && x.size === "portrait") ?? picked.find((x) => x.direction === dirIdx)!;
-        const dir = dirs[dirIdx]!;
-        const { bytes } = await readMedia(design.renderRef!);
-        const hash = await ads.uploadImage(p.accountId, bytes, `keel-studio-${design.id}.png`);
-        const creativeId = await ads.postCreative(p.accountId, {
-          name: `${p.name} · ${dir.title}`,
-          object_story_spec: { page_id: page.id, link_data: { link: brief.productUrl, message: dir.primaryText, name: dir.headline, image_hash: hash, call_to_action: { type: dir.cta, value: { link: brief.productUrl } } } },
-        }, locked);
-        const ad = await ads.createAd(p.accountId, { adsetId: adset.id, creativeId, name: `${dir.title}` });
-        made.push({ designId: design.id, direction: dirIdx, adId: ad.id, creativeId });
-        // Watched from its first second: what Keel set is the approved baseline.
-        const actual = await ads.getFeaturesSpec(creativeId).catch(() => locked);
-        await db.insert(schema.creativeBaselines).values({ creativeId, adId: ad.id, featuresSpec: actual, lockedBy: userId }).onConflictDoNothing();
+        made.push(await adFor({ ads, accountId: p.accountId, projectName: p.name, pageId: page.id, adsetId: adset.id, brief, dir: dirs[dirIdx]!, dirIdx, design, locked: lockedFeatures(rulebook), userId }));
       }
-      const launch = { campaignId: campaign.id, adsetId: adset.id, pageId: page.id, ads: made, at: new Date().toISOString() };
+      const launch: LaunchInfo = { campaignId: campaign.id, adsetId: adset.id, pageId: page.id, ads: made, at: new Date().toISOString(), currency: account.currency, minor };
       await db.update(schema.studioProjects).set({ status: "launched", launch, updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
       await d.audit(userId, "studio.launched", { projectId, accountId: p.accountId, campaignId: campaign.id, ads: made.map((m) => m.adId) });
       return launch;
@@ -332,11 +325,76 @@ export function createStudio(d: StudioDeps) {
     }
   }
 
-  async function create(o: { workspaceId: string; brandId: string; accountId: string; name: string; brief: Brief; userId: string }) {
+  async function create(o: { workspaceId: string; brandId: string; accountId: string; name: string; brief: Brief; userId: string; start?: boolean }) {
     const id = randomUUID();
     await db.insert(schema.studioProjects).values({ id, workspaceId: o.workspaceId, brandId: o.brandId, accountId: o.accountId, name: o.name, brief: o.brief, status: "drafting", steps: STEPS, createdBy: o.userId });
-    void run(id);
+    if (o.start !== false) void run(id);
     return id;
+  }
+
+  /** One creative (enhancements locked) and one ad in an existing ad set; its baseline is locked straight away. */
+  async function adFor(o: { ads: AdsGraphClient; accountId: string; projectName: string; pageId: string; adsetId: string; brief: Brief; dir: Direction; dirIdx: number;
+    design: { id: string; renderRef: string | null }; locked: Record<string, string>; userId: string; active?: boolean }): Promise<LaunchedAd> {
+    const { ads, brief, dir } = o;
+    const { bytes } = await readMedia(o.design.renderRef!);
+    const hash = await ads.uploadImage(o.accountId, bytes, `keel-studio-${o.design.id}.png`);
+    const creativeId = await ads.postCreative(o.accountId, {
+      name: `${o.projectName} · ${dir.title}`,
+      object_story_spec: { page_id: o.pageId, link_data: { link: brief.productUrl, message: dir.primaryText, name: dir.headline, image_hash: hash, call_to_action: { type: dir.cta, value: { link: brief.productUrl } } } },
+    }, o.locked);
+    const ad = await ads.createAd(o.accountId, { adsetId: o.adsetId, creativeId, name: dir.title, status: o.active ? "ACTIVE" : "PAUSED" });
+    // Watched from its first second: what Keel set is the approved baseline.
+    const actual = await ads.getFeaturesSpec(creativeId).catch(() => o.locked);
+    await db.insert(schema.creativeBaselines).values({ creativeId, adId: ad.id, featuresSpec: actual, lockedBy: o.userId }).onConflictDoNothing();
+    return { designId: o.design.id, direction: o.dirIdx, adId: ad.id, creativeId };
+  }
+
+  /**
+   * A new direction added to an existing project (Autopilot's "make a variant of the winner"): art-directed scene,
+   * every size laid out and checked, picked for launch. Returns its index.
+   */
+  async function addDirection(projectId: string, dir: Direction) {
+    const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    if (!p) throw new Error("not found");
+    const brief = BriefSchema.parse(p.brief);
+    const { name: brand, rulebook } = await brandContext(p.brandId, brief);
+    const product = await Promise.all(brief.productPhotos.slice(0, 2).map(imageInput));
+    const rows = (p.directions ?? []) as DirRow[];
+    const index = rows.length;
+    const scene = await artDirect(projectId, dir, brief, product, dir.title);
+    const row: DirRow = { ...dir, sceneRef: scene.ref, productInScene: scene.productInScene, ranking: scene.ranking, sceneHistory: [...new Set([...scene.takes, scene.ref])] };
+    const template = layoutFor(scene.ranking, "hero");
+    for (const size of Object.keys(SIZES) as SizeKey[]) {
+      const doc = compose({ ...composeInput(brief, brand, row, row.sceneRef, row.productInScene), template, size });
+      await db.insert(schema.studioDesigns).values({ id: randomUUID(), projectId, direction: index, size, doc, renderRef: await renderDesign(doc), picked: true });
+    }
+    const [sq] = await db.select().from(schema.studioDesigns).where(and(eq(schema.studioDesigns.projectId, projectId), eq(schema.studioDesigns.direction, index), eq(schema.studioDesigns.size, "square")));
+    if (sq?.renderRef) {
+      const check = await d.models.critique(await imageInput(sq.renderRef), product[0]!, dir, rulebook).catch(() => null);
+      if (check) await db.update(schema.studioDesigns).set({ check }).where(and(eq(schema.studioDesigns.projectId, projectId), eq(schema.studioDesigns.direction, index)));
+    }
+    const [fresh] = await db.select({ directions: schema.studioProjects.directions }).from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    await db.update(schema.studioProjects).set({ directions: [...((fresh?.directions ?? []) as DirRow[]), row], updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
+    await log(projectId, "compose", `New direction "${dir.title}" drawn from what's working`, "decision");
+    return index;
+  }
+
+  /** Adds one direction's ad to an already-launched campaign's ad set. */
+  async function extendLaunch(projectId: string, dirIdx: number, userId: string, active: boolean) {
+    const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    if (!p?.launch) throw new Error("this campaign hasn't launched yet");
+    const launch = p.launch as LaunchInfo;
+    const brief = BriefSchema.parse(p.brief);
+    const { rulebook } = await brandContext(p.brandId, brief);
+    const dir = ((p.directions ?? []) as Direction[])[dirIdx];
+    const [design] = await db.select().from(schema.studioDesigns).where(and(eq(schema.studioDesigns.projectId, projectId), eq(schema.studioDesigns.direction, dirIdx), eq(schema.studioDesigns.size, "portrait")));
+    if (!dir || !design) throw new Error("no such direction");
+    const ads = await d.adsFor(p.accountId);
+    const made = await adFor({ ads, accountId: p.accountId, projectName: p.name, pageId: launch.pageId, adsetId: launch.adsetId, brief, dir, dirIdx, design, locked: lockedFeatures(rulebook), userId, active });
+    const next: LaunchInfo = { ...launch, ads: [...launch.ads, made] };
+    await db.update(schema.studioProjects).set({ launch: next, updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
+    await d.audit(userId, "studio.ad_added", { projectId, accountId: p.accountId, adId: made.adId, direction: dirIdx });
+    return made;
   }
 
   async function list(workspaceIds: string[]) {
@@ -347,6 +405,6 @@ export function createStudio(d: StudioDeps) {
     return projects.map((p) => ({ ...p, covers: covers.filter((c) => c.projectId === p.id).sort((a, b) => a.direction - b.direction).map((c) => c.renderRef) }));
   }
 
-  return { create, run, list, regenerateScene, useScene, saveDesign, changeTemplate, launch, renderDesign, drawStoryboard };
+  return { create, run, list, regenerateScene, useScene, saveDesign, changeTemplate, launch, renderDesign, drawStoryboard, addDirection, extendLaunch };
 }
 export type Studio = ReturnType<typeof createStudio>;

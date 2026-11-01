@@ -1,8 +1,9 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useRef, useState, type DragEvent } from "react";
-import { api, mediaUrl, studio } from "../api.ts";
-import { IconPlus, IconSparkle, IconX } from "../components/Icons.tsx";
+import { api, autopilot, mediaUrl, studio } from "../api.ts";
+import { AUTOPILOT_STATUS } from "./Autopilot.tsx";
+import { IconArrowRight, IconLink, IconPlus, IconSparkle, IconX } from "../components/Icons.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { Button, Card, Empty, ErrorNote, Field, Input, PageHeader, Pill, SectionTitle, Skeleton, Spinner, Textarea, cx, relTime } from "../components/ui.tsx";
 
@@ -11,48 +12,129 @@ const STATUS: Record<string, { label: string; tone: "neutral" | "accent" | "ok" 
   launched: { label: "Launched · paused", tone: "ok" }, failed: { label: "Needs attention", tone: "critical" },
 };
 
-/** Studio home: every campaign made here, newest first. */
+/** Create: paste a website and let Autopilot run it, or build a campaign from a brief. */
 export function Create() {
   const projects = useQuery({ queryKey: ["studio", "projects"], queryFn: studio.projects, refetchInterval: (q) => (q.state.data?.some((p) => p.status === "drafting" || p.status === "launching") ? 3000 : false) });
+  const runs = useQuery({ queryKey: ["autopilot", "list"], queryFn: autopilot.list, refetchInterval: (q) => (q.state.data?.some((a) => ["reading", "crafting", "launching"].includes(a.status)) ? 3000 : 30_000) });
   return (
     <div>
-      <PageHeader title="Create" subtitle="Turn a product and a brief into on-brand ads in every size, then launch them paused with AI enhancements locked."
-        actions={<Link to="/create/new"><Button variant="primary" icon={<IconPlus size={16} />}>New campaign</Button></Link>} />
-      {projects.isLoading ? <Skeleton className="h-64" /> : projects.isError ? <ErrorNote error={projects.error} /> : !projects.data?.length ? (
-        <Card>
-          <Empty icon={<IconSparkle size={26} />} title="Make your first campaign"
-            action={<Link to="/create/new"><Button variant="primary" size="lg">Start with a product</Button></Link>}>
-            Upload a product photo and say who it's for. Keel plans three directions, puts your real product into new scenes, lays out every ad size and checks each design before you see it.
-          </Empty>
-        </Card>
-      ) : (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {projects.data.map((p, i) => {
-            const st = STATUS[p.status] ?? { label: p.status, tone: "neutral" as const };
-            return (
-              <Link key={p.id} to="/create/$id" params={{ id: p.id }} className="block animate-enter" style={{ animationDelay: `${Math.min(i, 8) * 35}ms` }}>
-                <Card className="press overflow-hidden transition-shadow duration-200 hover:shadow-[var(--shadow-pop)]">
-                  <div className="grid aspect-[3/1] grid-cols-3 gap-px bg-fill">
-                    {[0, 1, 2].map((k) => (
-                      <div key={k} className="bg-fill">
-                        {p.covers[k] ? <img src={mediaUrl(p.covers[k]!)} alt="" loading="lazy" className="h-full w-full object-cover" /> : p.status === "drafting" ? <Skeleton className="h-full rounded-none" /> : null}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="flex items-start justify-between gap-3 p-4">
-                    <div className="min-w-0">
-                      <div className="truncate font-semibold">{p.name}</div>
-                      <div className="truncate text-[13px] text-ink-2">{p.brief.productName} · {relTime(p.createdAt)}</div>
+      <PageHeader title="Create" subtitle="Paste your website and Keel runs the campaign: research, ads, launch on your go-ahead, then it learns and improves." />
+      <AutopilotStart />
+      {runs.data && runs.data.length > 0 && (
+        <section className="mt-8">
+          <SectionTitle>On autopilot</SectionTitle>
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {runs.data.map((a, i) => {
+              const st = AUTOPILOT_STATUS[a.status] ?? { label: a.status, tone: "neutral" as const };
+              const busy = ["reading", "crafting", "launching"].includes(a.status);
+              return (
+                <Link key={a.id} to="/autopilot/$id" params={{ id: a.id }} className="block animate-enter" style={{ animationDelay: `${Math.min(i, 8) * 35}ms` }}>
+                  <Card className="press overflow-hidden transition-shadow duration-200 hover:shadow-[var(--shadow-pop)]">
+                    <div className="grid aspect-[3/1] grid-cols-3 gap-px bg-fill">
+                      {[0, 1, 2].map((k) => <div key={k} className="bg-fill">{a.covers[k] ? <img src={mediaUrl(a.covers[k]!)} alt="" loading="lazy" className="h-full w-full object-cover" /> : busy ? <Skeleton className="h-full rounded-none" /> : null}</div>)}
                     </div>
-                    <Pill tone={st.tone}>{(p.status === "drafting" || p.status === "launching") && <Spinner className="h-3 w-3" />}{st.label}</Pill>
-                  </div>
-                </Card>
-              </Link>
-            );
-          })}
-        </div>
+                    <div className="flex items-center gap-3 p-4">
+                      <div className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl border hairline bg-white">
+                        {a.logoRef ? <img src={mediaUrl(a.logoRef)} alt="" className="h-full w-full object-contain p-1.5" /> : <IconLink size={16} className="text-ink-3" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-semibold">{a.brand ?? host(a.url)}</div>
+                        <div className="truncate text-[13px] text-ink-2">{host(a.url)} · {relTime(a.createdAt)}</div>
+                      </div>
+                      {a.pending ? <Pill tone="medium">{a.pending} to approve</Pill> : <Pill tone={st.tone}>{busy && <Spinner className="h-3 w-3" />}{st.label}</Pill>}
+                    </div>
+                  </Card>
+                </Link>
+              );
+            })}
+          </div>
+        </section>
       )}
+      <section className="mt-8">
+        <SectionTitle action={<Link to="/create/new"><Button size="sm" icon={<IconPlus size={14} />}>From a brief</Button></Link>}>Campaigns</SectionTitle>
+        {projects.isLoading ? <Skeleton className="h-64" /> : projects.isError ? <ErrorNote error={projects.error} /> : !projects.data?.length ? (
+          <Card>
+            <Empty icon={<IconSparkle size={26} />} title="Or start from a product photo"
+              action={<Link to="/create/new"><Button size="lg">Start with a brief</Button></Link>}>
+              Upload a product photo and say who it's for. Keel plans three directions, puts your real product into new scenes, lays out every ad size and checks each design before you see it.
+            </Empty>
+          </Card>
+        ) : (
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {projects.data.map((p, i) => {
+              const st = STATUS[p.status] ?? { label: p.status, tone: "neutral" as const };
+              return (
+                <Link key={p.id} to="/create/$id" params={{ id: p.id }} className="block animate-enter" style={{ animationDelay: `${Math.min(i, 8) * 35}ms` }}>
+                  <Card className="press overflow-hidden transition-shadow duration-200 hover:shadow-[var(--shadow-pop)]">
+                    <div className="grid aspect-[3/1] grid-cols-3 gap-px bg-fill">
+                      {[0, 1, 2].map((k) => (
+                        <div key={k} className="bg-fill">
+                          {p.covers[k] ? <img src={mediaUrl(p.covers[k]!)} alt="" loading="lazy" className="h-full w-full object-cover" /> : p.status === "drafting" ? <Skeleton className="h-full rounded-none" /> : null}
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex items-start justify-between gap-3 p-4">
+                      <div className="min-w-0">
+                        <div className="truncate font-semibold">{p.name}</div>
+                        <div className="truncate text-[13px] text-ink-2">{p.brief.productName} · {relTime(p.createdAt)}</div>
+                      </div>
+                      <Pill tone={st.tone}>{(p.status === "drafting" || p.status === "launching") && <Spinner className="h-3 w-3" />}{st.label}</Pill>
+                    </div>
+                  </Card>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+      </section>
     </div>
+  );
+}
+
+const host = (u: string) => { try { return new URL(u).host.replace(/^www\./, ""); } catch { return u; } };
+
+/** The one-field start: a website address and a daily budget. */
+function AutopilotStart() {
+  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const navigate = useNavigate();
+  const accounts = (me.data?.accounts ?? []).filter((a) => !a.isDemo && a.role !== "viewer");
+  const [url, setUrl] = useState("");
+  const [budget, setBudget] = useState(500);
+  const [account, setAccount] = useState("");
+  const accountId = account || accounts[0]?.metaAccountId || "";
+  const start = useMutation({
+    mutationFn: () => autopilot.start({ accountId, url: url.trim(), dailyBudget: budget }),
+    onSuccess: ({ id }) => void navigate({ to: "/autopilot/$id", params: { id } }),
+  });
+  const ok = url.trim().length > 3 && budget > 0 && !!accountId;
+  return (
+    <Card className="relative overflow-hidden p-6 md:p-8">
+      <div aria-hidden className="pointer-events-none absolute -top-24 -right-24 h-64 w-64 rounded-full bg-accent/10 blur-3xl" />
+      <div className="relative">
+        <div className="flex items-center gap-2 text-[13px] font-medium text-accent"><IconSparkle size={15} />Autopilot</div>
+        <h2 className="mt-1 text-[24px] leading-tight font-semibold md:text-[28px]">Paste your website. Keel runs the campaign.</h2>
+        <p className="mt-2 max-w-2xl text-[15px] text-ink-2">It reads your brand and products, studies competitors' ads on Meta, makes art-directed ads and a Reel storyboard, launches when you say so, then reads the results and proposes what to change next.</p>
+        <form className="mt-5 flex flex-col gap-3 lg:flex-row" onSubmit={(e) => { e.preventDefault(); if (ok) start.mutate(); }}>
+          <div className="relative flex-1">
+            <IconLink size={16} className="pointer-events-none absolute top-1/2 left-3.5 -translate-y-1/2 text-ink-3" />
+            <Input aria-label="Website" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="yourshop.com" inputMode="url" autoComplete="url" className="h-12 pl-10 text-[16px]" />
+          </div>
+          <label className="flex h-12 items-center gap-2 rounded-xl border hairline bg-surface px-3 text-[14px] text-ink-2">
+            Daily budget
+            <input type="number" min={1} value={budget} onChange={(e) => setBudget(Number(e.target.value))} className="w-24 bg-transparent text-[16px] text-ink tabular-nums outline-none" />
+          </label>
+          {accounts.length > 1 && (
+            <select aria-label="Ad account" value={accountId} onChange={(e) => setAccount(e.target.value)} className="h-12 rounded-xl border hairline bg-surface px-3 text-[15px]">
+              {accounts.map((a) => <option key={a.metaAccountId} value={a.metaAccountId}>{a.name}</option>)}
+            </select>
+          )}
+          <Button type="submit" variant="primary" size="lg" className="h-12" disabled={!ok} loading={start.isPending} icon={<IconArrowRight size={16} />}>Start</Button>
+        </form>
+        {me.isSuccess && !accounts.length && <p className="mt-3 text-[13px] text-ink-2">Connect a Meta ad account in <Link to="/settings" className="text-accent">Settings</Link> first.</p>}
+        {start.isError && <div className="mt-3"><ErrorNote error={start.error} /></div>}
+        <p className="mt-4 text-[13px] text-ink-3">Nothing spends without your approval. Meta's AI enhancements stay locked off, and Keel watches every ad it makes.</p>
+      </div>
+    </Card>
   );
 }
 

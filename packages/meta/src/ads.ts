@@ -248,8 +248,38 @@ export class AdsGraphClient {
     }, ["destination_type", "bid_strategy"]);
   }
 
-  createAd(accountId: string, o: { adsetId: string; creativeId: string; name: string }) {
-    return this.req<{ id: string }>(`${accountId}/ads`, { method: "POST", params: { name: o.name, adset_id: o.adsetId, creative: { creative_id: o.creativeId }, status: "PAUSED" } });
+  createAd(accountId: string, o: { adsetId: string; creativeId: string; name: string; status?: "PAUSED" | "ACTIVE" }) {
+    return this.req<{ id: string }>(`${accountId}/ads`, { method: "POST", params: { name: o.name, adset_id: o.adsetId, creative: { creative_id: o.creativeId }, status: o.status ?? "PAUSED" } });
+  }
+
+  // ── Autopilot: switch things on and off, change budget, read results ─────
+
+  /** Campaign, ad set or ad: ACTIVE or PAUSED. */
+  setStatus(id: string, status: "ACTIVE" | "PAUSED") {
+    return this.req<{ success: boolean }>(id, { method: "POST", params: { status } });
+  }
+
+  setDailyBudget(adsetId: string, dailyBudgetMinor: number) {
+    return this.req<{ success: boolean }>(adsetId, { method: "POST", params: { daily_budget: Math.round(dailyBudgetMinor) } });
+  }
+
+  async statuses(ids: string[]): Promise<Record<string, string>> {
+    if (!ids.length) return {};
+    const res = await this.req<Record<string, { id: string; effective_status?: string }>>("", { params: { ids: ids.join(","), fields: "effective_status" } });
+    return Object.fromEntries(Object.values(res).map((x) => [x.id, x.effective_status ?? "UNKNOWN"]));
+  }
+
+  /** Lifetime results per ad (impressions, clicks, CTR, CPC, spend, reach, frequency). */
+  async adInsights(accountId: string, adIds: string[]) {
+    if (!adIds.length) return [];
+    const res = await this.req<{ data: { ad_id: string; impressions?: string; reach?: string; clicks?: string; inline_link_clicks?: string; ctr?: string; inline_link_click_ctr?: string; cpc?: string; cost_per_inline_link_click?: string; spend?: string; frequency?: string }[] }>(`${accountId}/insights`, {
+      params: { level: "ad", date_preset: "maximum", fields: "ad_id,impressions,reach,clicks,inline_link_clicks,ctr,inline_link_click_ctr,cpc,cost_per_inline_link_click,spend,frequency", filtering: [{ field: "ad.id", operator: "IN", value: adIds }], limit: "200" },
+    });
+    const n = (v?: string) => (v === undefined ? 0 : Number(v) || 0);
+    return res.data.map((r) => ({
+      adId: r.ad_id, impressions: n(r.impressions), reach: n(r.reach), clicks: n(r.inline_link_clicks ?? r.clicks),
+      ctr: n(r.inline_link_click_ctr ?? r.ctr), cpc: n(r.cost_per_inline_link_click ?? r.cpc), spend: n(r.spend), frequency: n(r.frequency),
+    }));
   }
 
   swapCreative(adId: string, creativeId: string) {
