@@ -10,6 +10,12 @@ import { schema } from "@keel/db";
 import { renderSvgToPng, saveMedia } from "@keel/meta";
 
 process.env.META_SYSTEM_USER_TOKEN ??= "fake";
+process.env.KEEL_ALLOW_LOCAL_SITES = "1";
+// A competitor's website for the research agent to read.
+const { createServer } = await import("node:http");
+const rival = createServer((_q, r) => r.writeHead(200, { "content-type": "text/html" }).end(`<!doctype html><title>Rival Outdoors</title><meta property="og:site_name" content="Rival Outdoors"><h1>Conquer every summit</h1><p>Monsoon sale: 40% off all rain jackets</p><a href="/sale">Sale</a>`));
+await new Promise<void>((res) => rival.listen(0, "127.0.0.1", res));
+const RIVAL = `http://127.0.0.1:${(rival.address() as { port: number }).port}/`;
 const ACCOUNT = "act_9990002";
 const posts: { path: string; params: Record<string, string> }[] = [];
 const realFetch = globalThis.fetch;
@@ -47,7 +53,7 @@ const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().s
 
 const id = await studio.create({
   workspaceId: "ws_keel", brandId: "brand_studio_e2e", accountId: ACCOUNT, name: "Monsoon launch", userId: "user_demo_owner",
-  brief: { productName: "Monsoon Jacket", productUrl: "https://northline.test/jacket", productPhotos: [productRef], referenceImages: [], price: "₹3,499", offer: "", audience: "Commuters in Mumbai", countries: ["IN"], ageMin: 22, ageMax: 45, dailyBudget: 500, startDate: day(1), endDate: day(14), notes: "", competitors: ["Decathlon"], competitorShots: [] },
+  brief: { productName: "Monsoon Jacket", productUrl: "https://northline.test/jacket", productPhotos: [productRef], referenceImages: [], price: "₹3,499", offer: "", audience: "Commuters in Mumbai", countries: ["IN"], ageMin: 22, ageMax: 45, dailyBudget: 500, startDate: day(1), endDate: day(14), notes: "", competitors: ["Decathlon", RIVAL], competitorShots: [] },
 });
 for (let i = 0; i < 120; i++) {
   const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, id));
@@ -58,6 +64,7 @@ const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studio
 assert.equal(p!.status, "ready", `status ${p!.status}: ${p!.error}`);
 const research = p!.research as { ads: unknown[]; insights: { whiteSpace: string[] } };
 assert.ok(research.ads.length >= 3, "research found competitor ads");
+assert.ok((research.ads as { source: string; pageName: string }[]).some((a) => a.source === "site" && a.pageName === "Rival Outdoors"), "the agent read the competitor's website");
 assert.ok(research.insights.whiteSpace.length, "insights name open space");
 assert.ok((p!.log as unknown[]).length >= 5, "the agent logged its decisions");
 const dirs = p!.directions as { frames?: (string | null)[]; storyboard: { reel: unknown[] } }[];
@@ -82,6 +89,7 @@ assert.ok(posts.filter((x) => x.path.endsWith("/ads")).every((x) => x.params.sta
 const baselines = await db.select().from(schema.creativeBaselines).where(eq(schema.creativeBaselines.lockedBy, "user_demo_owner"));
 assert.ok(baselines.length >= 3);
 console.log("✓ launched paused:", launch.campaignId, launch.adsetId, launch.ads.map((a) => a.adId).join(", "));
+rival.close();
 await rt.close();
 console.log("✓ studio end-to-end passed");
 process.exit(0);

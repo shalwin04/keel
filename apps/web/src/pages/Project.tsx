@@ -101,9 +101,15 @@ function ResearchView({ p }: { p: StudioProjectDetail }) {
   return (
     <div className="space-y-8">
       <Card className="p-6">
-        <p className="text-[12px] font-semibold text-ink-2">{r.ads.length} competitor ads · {new Set(r.ads.map((a) => a.pageName)).size} advertisers · searched {r.searchTerms.join(", ")}</p>
+        <p className="text-[12px] font-semibold text-ink-2">{[
+          r.ads.filter((a) => a.source === "ad_library").length && `${r.ads.filter((a) => a.source === "ad_library").length} ads`,
+          r.ads.filter((a) => a.source === "site").length && `${r.ads.filter((a) => a.source === "site").length} web pages`,
+          r.ads.filter((a) => a.source === "upload").length && `${r.ads.filter((a) => a.source === "upload").length} uploaded`,
+          `${new Set(r.ads.filter((a) => a.source !== "upload").map((a) => a.pageName)).size} competitors`,
+          r.searchTerms.length && `searched ${r.searchTerms.join(", ")}`,
+        ].filter(Boolean).join(" · ")}</p>
         <p className="mt-2 text-[17px] leading-relaxed">{ins.summary}</p>
-        {r.note && <p className="mt-3 text-[13px] text-high">{r.note}</p>}
+        {r.note && <p className="mt-3 text-[13px] text-ink-2">{r.note}</p>}
       </Card>
       <div className="grid gap-4 md:grid-cols-3">
         <Card className="p-5">
@@ -111,7 +117,7 @@ function ResearchView({ p }: { p: StudioProjectDetail }) {
           <ul className="space-y-3">
             {ins.patterns.map((pt) => (
               <li key={pt.label}>
-                <div className="flex items-baseline justify-between gap-2"><span className="font-medium">{pt.label}</span>{pt.count > 0 && <span className="text-[12px] text-ink-3">{pt.count} ads</span>}</div>
+                <div className="flex items-baseline justify-between gap-2"><span className="font-medium">{pt.label}</span>{pt.count > 0 && <span className="text-[12px] text-ink-3">{pt.count} seen</span>}</div>
                 {pt.detail && <p className="text-[13px] text-ink-2">{pt.detail}</p>}
                 {pt.examples.length > 0 && (
                   <div className="mt-1.5 flex gap-1.5">
@@ -134,7 +140,7 @@ function ResearchView({ p }: { p: StudioProjectDetail }) {
         </Card>
       </div>
       <div>
-        <h3 className="mb-3 px-1 text-[13px] font-semibold tracking-[0.04em] text-ink-2 uppercase">Competitor ads, longest-running first</h3>
+        <h3 className="mb-3 px-1 text-[13px] font-semibold tracking-[0.04em] text-ink-2 uppercase">What the agent studied</h3>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {r.ads.map((a, i) => (
             <Card key={a.id} className="animate-enter overflow-hidden" style={{ animationDelay: `${Math.min(i, 10) * 30}ms` }}>

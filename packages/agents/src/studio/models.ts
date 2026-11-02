@@ -3,7 +3,7 @@ import {
   AdAnalysisSchema, DirectionSchema, InsightsSchema, LearnSchema, SiteProfileSchema,
   type AdAnalysis, type Learn, type PerformanceSnapshot, type SiteProfile, type Brief, type CompetitorAd, type Direction, type Insights, type ReelShot, type Rulebook,
 } from "@keel/core";
-import { callJson, config, editImage, generateImage, metaClient, renderSvgToPng, type ImageInput, type ModelCallInfo, type SiteCrawl } from "@keel/meta";
+import { callJson, config, editImage, generateImage, metaClient, renderSvgToPng, runTools, type AgentTool, type ImageInput, type ModelCallInfo, type SiteCrawl } from "@keel/meta";
 import { rulebookBlock } from "../prompts.ts";
 
 export type StudioCall = (info: ModelCallInfo & { step: string }) => void;
@@ -14,8 +14,10 @@ export interface SceneRanking { scores: SceneScore[]; best: number; fix: string;
 /** Everything Studio asks of a model. Real (Meta) and offline (fake) implementations share it. */
 export interface StudioModels {
   researchPlan(brief: Brief, brand: string): Promise<{ searchTerms: string[]; competitors: string[]; sites: string[] }>;
+  /** The research agent: Muse Wonder with tools (Ad Library search, reading websites, looking at ads), deciding each next step itself. */
+  researchLoop(o: { system: string; text: string; tools: AgentTool[]; maxSteps: number; onText: (t: string) => Promise<void> }): Promise<string>;
   analyzeAd(ad: { image?: ImageInput; body?: string; title?: string; pageName: string }): Promise<AdAnalysis>;
-  synthesize(brief: Brief, brand: string, ads: CompetitorAd[]): Promise<Insights>;
+  synthesize(brief: Brief, brand: string, ads: CompetitorAd[], notes?: string): Promise<Insights>;
   planDirections(brief: Brief, brand: string, product: ImageInput[], rulebook: Rulebook | undefined, insights: Insights | undefined): Promise<Direction[]>;
   /** One scene candidate. With a product photo, Muse Image places the real product in it (productInScene). */
   generateScene(direction: Direction, brief: Brief, product: ImageInput[], variant: number): Promise<{ bytes: Buffer; productInScene: boolean }>;
@@ -128,11 +130,14 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
       [`Brand: ${brand}`, `Product: ${brief.productName} (${brief.productUrl})`, `Market: ${brief.countries.join(", ")}`, brief.audience && `Audience: ${brief.audience}`,
         brief.competitors.length ? `Competitors named by the brand: ${brief.competitors.join(", ")}` : ""].filter(Boolean).join("\n"), [], "low"),
 
+    researchLoop: (o) => runTools({ client: metaClient(), model: config.models.wonder, system: o.system, text: o.text, tools: o.tools, maxSteps: o.maxSteps, maxParallel: 3, reasoningEffort: "medium", onText: o.onText, onCall: (i) => onCall?.({ ...i, step: "research" }) }),
+
     analyzeAd: (ad) => call("analyze", config.models.spark, ANALYZE_AD, AdAnalysisSchema,
       [`Advertiser: ${ad.pageName}`, ad.title && `Headline: ${ad.title}`, ad.body && `Copy: ${ad.body.slice(0, 600)}`].filter(Boolean).join("\n"), ad.image ? [ad.image] : [], "low"),
 
-    synthesize: (brief, brand, ads) => call("insights", config.models.wonder, SYNTHESIZE, InsightsSchema,
+    synthesize: (brief, brand, ads, notes) => call("insights", config.models.wonder, SYNTHESIZE, InsightsSchema,
       [`Our brand: ${brand}. Product: ${brief.productName}. Audience: ${brief.audience || "not stated"}. Market: ${brief.countries.join(", ")}.`,
+        notes ? `The research agent's own notes: ${notes.slice(0, 1500)}` : "",
         "Competitor ads (source \"site\" = the competitor's website homepage, not an ad):", ...ads.map((a) => JSON.stringify({ id: a.id, source: a.source, advertiser: a.pageName, daysRunning: a.daysRunning, copy: a.body?.slice(0, 300), headline: a.title, analysis: a.analysis }))].join("\n"), [], "high"),
 
     async planDirections(brief, brand, product, rulebook, insights) {
@@ -211,6 +216,17 @@ export function fakeStudioModels(): StudioModels {
   return {
     async researchPlan(brief) {
       return { competitors: brief.competitors.length ? brief.competitors : ["Decathlon", "Wildcraft", "The North Face"], searchTerms: ["rain jacket", "monsoon jacket", "waterproof jacket"], sites: [] };
+    },
+    /** Scripted stand-in for the agent: searches, reads any competitor sites named in the brief, looks at two ads. */
+    async researchLoop(o) {
+      // Like the real loop, a failing tool returns an error to the agent instead of stopping it.
+      const tool = (n: string) => (args: Record<string, unknown>) => o.tools.find((t) => t.name === n)!.run(args).catch((e: Error) => `error: ${e.message}`);
+      await o.onText("Starting with the category search, then the competitors' own sites.");
+      const res = JSON.parse(await tool("search_ad_library")({ terms: "rain jacket" })) as { ads?: { id: string }[] };
+      const named = o.text.split("\n").find((l) => l.startsWith("Competitors the brand named:")) ?? "";
+      for (const u of (named.match(/https?:\/\/[^\s,]+/g) ?? []).slice(0, 2)) await tool("read_website")({ url: u });
+      for (const a of (res.ads ?? []).slice(0, 2)) await tool("look_at_ad")({ id: a.id });
+      return "Competitors lead with mountains and discounts; nobody talks about the daily commute.";
     },
     async analyzeAd(ad) {
       const n = ad.pageName.length;

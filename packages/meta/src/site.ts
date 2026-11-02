@@ -34,6 +34,10 @@ export interface SiteCrawl {
   products: SiteProduct[];
   platform?: string;
   pagesRead: number;
+  /** Same-site links with their text (for an agent deciding where to look next). */
+  links: { url: string; text: string }[];
+  /** Prices visible on the page as written ("₹2,999"). */
+  prices: string[];
 }
 
 const PRIVATE = [/^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./, /^169\.254\./, /^0\./, /^::1$/, /^f[cd]/i, /^fe80/i, /^::ffff:(127|10|192\.168)\./];
@@ -53,7 +57,7 @@ export async function assertPublicUrl(raw: string): Promise<URL> {
 
 type Raw = {
   title: string; description: string; siteName: string; lang: string; themeColor: string; ogImage: string; logo: string; icon: string;
-  colors: string[]; fonts: string[]; headings: string[]; text: string; nav: string[]; socials: string[]; links: string[]; prices: string[];
+  colors: string[]; fonts: string[]; headings: string[]; text: string; nav: string[]; socials: string[]; links: string[]; named: { href: string; text: string }[]; prices: string[];
   ld: unknown[]; platform: string;
 };
 
@@ -76,7 +80,9 @@ const EXTRACT = `(() => {
   const svgLogo = !logoEl && (q('header svg[class*="logo" i], [class*="logo" i] svg, header a svg'));
   const icon = q('link[rel="apple-touch-icon"]')?.href || q('link[rel~="icon"][sizes]')?.href || q('link[rel~="icon"]')?.href || '';
   const ld = []; for (const s of document.querySelectorAll('script[type="application/ld+json"]')) { try { ld.push(JSON.parse(s.textContent || '')) } catch {} }
-  const links = [...new Set(Array.from(document.querySelectorAll('a[href]')).map((a) => abs(a.getAttribute('href'))).filter((h) => h.startsWith(location.origin)))];
+  const anchors = Array.from(document.querySelectorAll('a[href]')).map((a) => ({ href: abs(a.getAttribute('href')).split('#')[0], text: (a.textContent || a.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 60) })).filter((a) => a.href.startsWith(location.origin));
+  const links = [...new Set(anchors.map((a) => a.href))];
+  const seenL = new Set(); const named = anchors.filter((a) => a.text && !seenL.has(a.href) && seenL.add(a.href)).slice(0, 60);
   const socials = [...new Set(Array.from(document.querySelectorAll('a[href]')).map((a) => a.href).filter((h) => /(instagram|facebook|tiktok|youtube|x|twitter|linkedin)\\.com\\//i.test(h)))].slice(0, 8);
   const nav = [...new Set(Array.from(document.querySelectorAll('header a, nav a')).map((a) => (a.textContent || '').trim()).filter((t) => t && t.length < 40))].slice(0, 20);
   const headings = Array.from(document.querySelectorAll('h1, h2, h3')).map((h) => (h.textContent || '').replace(/\\s+/g, ' ').trim()).filter((t) => t && t.length < 160).slice(0, 24);
@@ -87,7 +93,7 @@ const EXTRACT = `(() => {
     title: document.title || '', description: meta('og:description') || meta('description'), siteName: meta('og:site_name') || meta('application-name') || '',
     lang: document.documentElement.lang || '', themeColor: meta('theme-color'), ogImage: abs(meta('og:image') || meta('twitter:image')),
     logo: logoEl ? abs(logoEl.currentSrc || logoEl.getAttribute('src') || '') : (svgLogo ? 'data:image/svg+xml;utf8,' + encodeURIComponent(new XMLSerializer().serializeToString(svgLogo)) : ''), icon,
-    colors: [...tally.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]).slice(0, 8), fonts, headings, text, nav, socials, links, prices, ld, platform,
+    colors: [...tally.entries()].sort((a, b) => b[1] - a[1]).map((x) => x[0]).slice(0, 8), fonts, headings, text, nav, socials, links, named, prices, ld, platform,
   };
 })()`;
 
@@ -224,6 +230,7 @@ export async function crawlSite(rawUrl: string, o: { maxProducts?: number; log?:
       url, origin, title: raw.title, description: raw.description, siteName: raw.siteName || raw.title.split(/[|–—-]/)[0]!.trim(), lang: raw.lang || undefined,
       themeColor: raw.themeColor || undefined, colors: raw.colors, fonts: raw.fonts, headings: raw.headings, text: raw.text, nav: raw.nav, socials: raw.socials,
       logoRef, shareImageRef, screenshotRef, products, platform: raw.platform || undefined, pagesRead,
+      links: raw.named.map((l) => ({ url: l.href, text: l.text })), prices: raw.prices,
     };
   });
 }

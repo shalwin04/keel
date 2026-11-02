@@ -79,6 +79,62 @@ export async function callJson<T>(o: JsonCallOpts<T>): Promise<T> {
   throw new Error(`Model ${o.model} did not return valid JSON`);
 }
 
+/** A tool the model can call during an agent loop. `run` returns what the model sees (plain text or JSON). */
+export interface AgentTool {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  run(args: Record<string, unknown>): Promise<string>;
+}
+
+/**
+ * A tool-calling loop (OpenAI-compatible function calling): the model reasons, calls tools (several at once if it wants),
+ * reads the results and continues until it answers in plain text or runs out of steps. Returns its final text.
+ */
+export async function runTools(o: {
+  client: OpenAI; model: string; system: string; text: string; images?: ImageInput[]; tools: AgentTool[]; maxSteps: number; maxParallel?: number;
+  reasoningEffort?: JsonCallOpts<unknown>["reasoningEffort"]; onCall?: (i: ModelCallInfo) => void; onText?: (text: string) => void | Promise<void>;
+}): Promise<string> {
+  const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    { role: "system", content: o.system },
+    { role: "user", content: [{ type: "text", text: o.text }, ...(o.images ?? []).map(imagePart)] },
+  ];
+  const defs = o.tools.map((t) => ({ type: "function" as const, function: { name: t.name, description: t.description, parameters: t.parameters } }));
+  const ask = async (withTools: boolean) => {
+    const t0 = Date.now();
+    const res = await o.client.chat.completions.create({
+      model: o.model, messages, ...(withTools ? { tools: defs } : {}),
+      ...(o.reasoningEffort ? ({ reasoning_effort: o.reasoningEffort } as object) : {}),
+    });
+    const inTok = res.usage?.prompt_tokens, outTok = res.usage?.completion_tokens;
+    o.onCall?.({ model: o.model, ms: Date.now() - t0, inputTokens: inTok, outputTokens: outTok, costUsd: costOf(o.model, inTok, outTok) });
+    return res.choices[0]?.message;
+  };
+  for (let step = 0; step < o.maxSteps; step++) {
+    const msg = await ask(true);
+    if (!msg) break;
+    if (msg.content?.trim()) await o.onText?.(msg.content.trim());
+    const calls = (msg.tool_calls ?? []).filter((c): c is OpenAI.Chat.ChatCompletionMessageFunctionToolCall => c.type === "function");
+    if (!calls.length) return msg.content ?? "";
+    messages.push({ role: "assistant", content: msg.content ?? "", tool_calls: calls });
+    const results: string[] = new Array(calls.length);
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(o.maxParallel ?? 3, calls.length) }, async () => {
+      while (next < calls.length) {
+        const i = next++;
+        const c = calls[i]!;
+        const tool = o.tools.find((t) => t.name === c.function.name);
+        const args = (safeJson(c.function.arguments || "{}") ?? {}) as Record<string, unknown>;
+        try { results[i] = tool ? await tool.run(args) : `error: there is no tool called ${c.function.name}`; }
+        catch (err) { results[i] = `error: ${(err as Error).message.slice(0, 300)}`; }
+      }
+    }));
+    for (const [i, c] of calls.entries()) messages.push({ role: "tool", tool_call_id: c.id, content: results[i]!.slice(0, 8000) });
+  }
+  messages.push({ role: "user", content: "That's the research budget used up. In a few sentences, say what you found." });
+  return (await ask(false))?.content ?? "";
+}
+
 function safeJson(s: string): unknown {
   const m = s.match(/\{[\s\S]*\}/);
   try { return JSON.parse(m ? m[0] : s); } catch { return undefined; }
