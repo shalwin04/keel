@@ -28,6 +28,8 @@ export const config = {
   graph: {
     get version() { return env("META_GRAPH_VERSION", "v24.0"); },
     get token() { return env("META_SYSTEM_USER_TOKEN"); },
+    /** The Ad Library API needs a token from an identity-confirmed person (system user tokens are refused). */
+    get adLibraryToken() { return process.env.META_AD_LIBRARY_TOKEN || env("META_SYSTEM_USER_TOKEN"); },
   },
   facebook: {
     get appId() { return env("META_APP_ID"); },

@@ -3,7 +3,7 @@
  *   npm run research:probe -- "rain jacket"
  */
 const term = process.argv[2] ?? "rain jacket";
-const token = process.env.META_SYSTEM_USER_TOKEN;
+const token = process.env.META_AD_LIBRARY_TOKEN || process.env.META_SYSTEM_USER_TOKEN;
 const v = process.env.META_GRAPH_VERSION ?? "v24.0";
 const base = process.env.META_API_BASE ?? "https://api.meta.ai/v1";
 
@@ -38,7 +38,7 @@ async function adLibrary(countries: string[]) {
   if (!json.error && !json.data?.length) console.log("  (no results)");
 }
 
-console.log(`token: ${token ? `${token.slice(0, 6)}… (${token.length} chars)` : "MISSING (META_SYSTEM_USER_TOKEN)"} · Graph ${v}`);
+console.log(`${process.env.META_AD_LIBRARY_TOKEN ? "META_AD_LIBRARY_TOKEN" : "system user token"}: ${token ? `${token.slice(0, 6)}… (${token.length} chars)` : "MISSING (META_SYSTEM_USER_TOKEN)"} · Graph ${v}`);
 for (const c of [["IN"], ["FR", "DE", "IE"]]) {
   try { await adLibrary(c); } catch (err) { console.log(`\n■ Ad Library ${JSON.stringify(c)}: ${(err as Error).message}`); }
 }

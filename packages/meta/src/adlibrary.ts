@@ -13,6 +13,9 @@ export interface LibraryAd {
   publisher_platforms?: string[];
 }
 
+/** The token can't use the Ad Library API (no identity confirmation). Research falls back to competitors' websites. */
+export class AdLibraryAccessError extends Error {}
+
 /** EU countries, where Meta's Ad Library API lists ordinary commercial ads (elsewhere it lists political ads only). */
 export const AD_LIBRARY_EU = ["FR", "DE", "IE", "NL", "ES", "IT"];
 
@@ -27,7 +30,7 @@ export async function searchAdLibrary(o: { terms: string; countries: string[]; l
   u.searchParams.set("ad_type", "ALL");
   u.searchParams.set("limit", String(o.limit ?? 25));
   u.searchParams.set("fields", FIELDS);
-  u.searchParams.set("access_token", o.token ?? config.graph.token);
+  u.searchParams.set("access_token", o.token ?? config.graph.adLibraryToken);
   let res: Response | undefined;
   for (let attempt = 0; attempt < 3 && !res; attempt++) {
     try { res = await fetch(u, { signal: AbortSignal.timeout(30_000) }); }
@@ -37,7 +40,10 @@ export async function searchAdLibrary(o: { terms: string; countries: string[]; l
     }
   }
   if (!res) throw new Error("Ad Library: no response");
-  const json = (await res.json()) as { data?: LibraryAd[]; error?: { message: string; error_user_msg?: string } };
+  const json = (await res.json()) as { data?: LibraryAd[]; error?: { message: string; error_user_msg?: string; code?: number; error_subcode?: number } };
+  if (json.error?.error_subcode === 2332002 || json.error?.code === 10) {
+    throw new AdLibraryAccessError("Ad Library access isn't set up: it needs a token from a person who has confirmed their identity with Meta (facebook.com/ads/library/api), in META_AD_LIBRARY_TOKEN");
+  }
   if (json.error) throw new Error(`Ad Library: ${json.error.error_user_msg ?? json.error.message}`);
   return json.data ?? [];
 }

@@ -13,7 +13,7 @@ export interface SceneRanking { scores: SceneScore[]; best: number; fix: string;
 
 /** Everything Studio asks of a model. Real (Meta) and offline (fake) implementations share it. */
 export interface StudioModels {
-  researchPlan(brief: Brief, brand: string): Promise<{ searchTerms: string[]; competitors: string[] }>;
+  researchPlan(brief: Brief, brand: string): Promise<{ searchTerms: string[]; competitors: string[]; sites: string[] }>;
   analyzeAd(ad: { image?: ImageInput; body?: string; title?: string; pageName: string }): Promise<AdAnalysis>;
   synthesize(brief: Brief, brand: string, ads: CompetitorAd[]): Promise<Insights>;
   planDirections(brief: Brief, brand: string, product: ImageInput[], rulebook: Rulebook | undefined, insights: Insights | undefined): Promise<Direction[]>;
@@ -33,10 +33,13 @@ export interface StudioModels {
 
 const RESEARCH_PLAN = `You plan competitor research for a Meta ad campaign.
 From the brief, list who the product competes with on Facebook and Instagram: well-known brands in that category and market
-(include any the brief names), and 3-5 short search terms people in the Ad Library would use to find ads in this category.
-JSON: {"competitors": [string], "searchTerms": [string]}`;
+(include any the brief names), 3-5 short search terms people in the Ad Library would use to find ads in this category, and the official
+website address of up to 4 of those competitors (only addresses you are confident are real, as bare domains like "decathlon.in", preferring
+the site for the brief's market).
+JSON: {"competitors": [string], "searchTerms": [string], "sites": [string]}`;
 
 const ANALYZE_AD = `You are a senior paid-social strategist reviewing ONE competitor ad (screenshot plus its copy, if any).
+If it is a competitor's website homepage rather than an ad, review its hero section and messaging the same way (format = "website").
 Describe it precisely and briefly: format (static, carousel, UGC video, studio product shot, lifestyle, meme…), the hook (what grabs attention
 in the first second), the visual style (lighting, setting, casting, composition), up to 4 dominant colours as hex, the offer, the CTA,
 the emotion it plays on, and strength 0-1 (how well-made and on-message it is for its audience).
@@ -121,7 +124,7 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
 
   return {
     researchPlan: (brief, brand) => call("research", config.models.wonder, RESEARCH_PLAN,
-      z.object({ competitors: z.array(z.string()).max(8).catch([]), searchTerms: z.array(z.string()).max(6).catch([]) }),
+      z.object({ competitors: z.array(z.string()).max(8).catch([]), searchTerms: z.array(z.string()).max(6).catch([]), sites: z.array(z.string().max(120)).max(6).catch([]) }),
       [`Brand: ${brand}`, `Product: ${brief.productName} (${brief.productUrl})`, `Market: ${brief.countries.join(", ")}`, brief.audience && `Audience: ${brief.audience}`,
         brief.competitors.length ? `Competitors named by the brand: ${brief.competitors.join(", ")}` : ""].filter(Boolean).join("\n"), [], "low"),
 
@@ -130,7 +133,7 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
 
     synthesize: (brief, brand, ads) => call("insights", config.models.wonder, SYNTHESIZE, InsightsSchema,
       [`Our brand: ${brand}. Product: ${brief.productName}. Audience: ${brief.audience || "not stated"}. Market: ${brief.countries.join(", ")}.`,
-        "Competitor ads:", ...ads.map((a) => JSON.stringify({ id: a.id, advertiser: a.pageName, daysRunning: a.daysRunning, copy: a.body?.slice(0, 300), headline: a.title, analysis: a.analysis }))].join("\n"), [], "high"),
+        "Competitor ads (source \"site\" = the competitor's website homepage, not an ad):", ...ads.map((a) => JSON.stringify({ id: a.id, source: a.source, advertiser: a.pageName, daysRunning: a.daysRunning, copy: a.body?.slice(0, 300), headline: a.title, analysis: a.analysis }))].join("\n"), [], "high"),
 
     async planDirections(brief, brand, product, rulebook, insights) {
       const out = await call("strategy", config.models.wonder, PLAN_SYSTEM, z.object({ directions: z.array(DirectionSchema).min(1).max(3) }),
@@ -207,7 +210,7 @@ export function fakeStudioModels(): StudioModels {
   const sceneSvg = (a: string, b: string, seed: number) => `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024"><defs><linearGradient id="a" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient><radialGradient id="b" cx=".5" cy=".5" r=".6"><stop offset="0" stop-color="#ffffff" stop-opacity=".35"/><stop offset="1" stop-color="#ffffff" stop-opacity="0"/></radialGradient></defs><rect width="1024" height="1024" fill="url(#a)"/><rect width="1024" height="1024" fill="url(#b)"/>${Array.from({ length: 28 }, (_, i) => `<line x1="${(i * 97 + seed * 41) % 1024}" y1="${(i * 53) % 900}" x2="${((i * 97 + seed * 41) % 1024) - 14}" y2="${((i * 53) % 900) + 60}" stroke="#fff" stroke-opacity=".18" stroke-width="3"/>`).join("")}</svg>`;
   return {
     async researchPlan(brief) {
-      return { competitors: brief.competitors.length ? brief.competitors : ["Decathlon", "Wildcraft", "The North Face"], searchTerms: ["rain jacket", "monsoon jacket", "waterproof jacket"] };
+      return { competitors: brief.competitors.length ? brief.competitors : ["Decathlon", "Wildcraft", "The North Face"], searchTerms: ["rain jacket", "monsoon jacket", "waterproof jacket"], sites: [] };
     },
     async analyzeAd(ad) {
       const n = ad.pageName.length;

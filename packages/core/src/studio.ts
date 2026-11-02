@@ -51,7 +51,7 @@ export type AdAnalysis = z.infer<typeof AdAnalysisSchema>;
 
 export interface CompetitorAd {
   id: string;
-  source: "ad_library" | "upload";
+  source: "ad_library" | "upload" | "site";
   pageName: string;
   body?: string;
   title?: string;
@@ -61,6 +61,8 @@ export interface CompetitorAd {
   platforms?: string[];
   snapshotRef?: string;
   libraryUrl?: string;
+  /** For source "site": the competitor's website that was read. */
+  siteUrl?: string;
   analysis?: AdAnalysis;
 }
 
@@ -76,7 +78,7 @@ export type Insights = z.infer<typeof InsightsSchema>;
 export interface Research {
   searchTerms: string[];
   competitors: string[];
-  source: "ad_library" | "uploads" | "mixed" | "none";
+  source: "ad_library" | "uploads" | "sites" | "mixed" | "none";
   note?: string;
   ads: CompetitorAd[];
   insights: Insights;

@@ -1,8 +1,9 @@
 import type { Brief, CompetitorAd, Research } from "@keel/core";
-import { AD_LIBRARY_EU, captureUrl, inlineImageHref, libraryUrl, renderSvgToPng, saveMedia, searchAdLibrary, type LibraryAd } from "@keel/meta";
+import { AD_LIBRARY_EU, AdLibraryAccessError, config, crawlSite, captureUrl, inlineImageHref, libraryUrl, renderSvgToPng, saveMedia, searchAdLibrary, type LibraryAd } from "@keel/meta";
 import type { StudioModels } from "./models.ts";
 
 const MAX_ADS = Number(process.env.STUDIO_RESEARCH_ADS ?? 12);
+const MAX_SITES = 4;
 
 const days = (a?: string, b?: string) => (a ? Math.max(1, Math.round(((b ? Date.parse(b) : Date.now()) - Date.parse(a)) / 86_400_000)) : undefined);
 
@@ -40,7 +41,7 @@ export async function gatherResearch(o: { models: StudioModels; brief: Brief; br
           for (const ad of await searchAdLibrary({ terms: t, countries, limit: 15 })) if (!found.has(ad.id)) found.set(ad.id, ad);
         } catch (err) {
           note = (err as Error).message;
-          await log(`Ad Library: ${note.slice(0, 160)}`, "warn");
+          await log(err instanceof AdLibraryAccessError ? "No Ad Library access on this token, so studying competitors' websites instead" : `Ad Library: ${note.slice(0, 160)}`, "warn");
           break;
         }
       }
@@ -63,7 +64,7 @@ export async function gatherResearch(o: { models: StudioModels; brief: Brief; br
     } else if (a.ad_snapshot_url) {
       try {
         const u = new URL(a.ad_snapshot_url);
-        if (!u.searchParams.get("access_token") && process.env.META_SYSTEM_USER_TOKEN) u.searchParams.set("access_token", process.env.META_SYSTEM_USER_TOKEN);
+        if (!u.searchParams.get("access_token")) u.searchParams.set("access_token", config.graph.adLibraryToken);
         snapshotRef = await saveMedia(await captureUrl(u.toString(), { width: 500, height: 900 }), ".png", "competitors");
       } catch { /* copy-only analysis */ }
     }
@@ -71,6 +72,23 @@ export async function gatherResearch(o: { models: StudioModels; brief: Brief; br
       startedAt: a.ad_delivery_start_time, stoppedAt: a.ad_delivery_stop_time, daysRunning: d || undefined, platforms: a.publisher_platforms, snapshotRef, libraryUrl: fake ? undefined : libraryUrl(a.id) };
   });
   for (const [i, ref] of brief.competitorShots.entries()) ads.push({ id: `upload-${i + 1}`, source: "upload", pageName: "Uploaded ad", snapshotRef: ref });
+
+  // Without Ad Library ads, the agent reads competitors' own websites: their hero message, offer and look.
+  if (!fake && !ads.some((a) => a.source === "ad_library")) {
+    const domain = (x: string) => { const m = x.trim().match(/^(?:https?:\/\/)?([a-z0-9-]+(?:\.[a-z0-9-]+)+)(?:[/?#].*)?$/i); return m ? m[1]!.toLowerCase() : undefined; };
+    const sites = [...new Set([...brief.competitors, ...plan.sites].map(domain).filter((x): x is string => !!x))].slice(0, MAX_SITES);
+    if (sites.length) await log(`Reading competitor websites: ${sites.join(", ")}`, "decision");
+    const read = await pool(sites, 2, async (host, i) => {
+      try {
+        const s = await crawlSite(`https://${host}`, { maxProducts: 0 });
+        return { id: `site-${i + 1}`, source: "site" as const, pageName: s.siteName || host, title: s.headings[0], body: [s.description, ...s.headings.slice(1, 6)].filter(Boolean).join(" · ").slice(0, 600), snapshotRef: s.screenshotRef, siteUrl: s.url } satisfies CompetitorAd;
+      } catch (err) {
+        await log(`Couldn't read ${host} (${(err as Error).message.slice(0, 80)})`, "warn");
+        return undefined;
+      }
+    });
+    ads.push(...read.filter((x): x is NonNullable<typeof x> => !!x));
+  }
 
   if (!ads.length) {
     await log("No competitor ads to study — planning from the brief alone", "warn");
@@ -88,6 +106,7 @@ export async function gatherResearch(o: { models: StudioModels; brief: Brief; br
 
   const insights = await models.synthesize(brief, o.brand, ads.filter((a) => a.analysis));
   for (const w of insights.whiteSpace.slice(0, 2)) await log(`Opening: ${w}`, "decision");
-  const hasLib = ads.some((a) => a.source === "ad_library"), hasUp = ads.some((a) => a.source === "upload");
-  return { searchTerms: terms, competitors: plan.competitors, source: hasLib && hasUp ? "mixed" : hasLib ? "ad_library" : "uploads", note, ads, insights };
+  const kinds = new Set(ads.map((a) => a.source));
+  const source = kinds.size > 1 ? "mixed" : kinds.has("ad_library") ? "ad_library" : kinds.has("site") ? "sites" : "uploads";
+  return { searchTerms: terms, competitors: plan.competitors, source, note, ads, insights };
 }

@@ -142,11 +142,12 @@ function ResearchView({ p }: { p: StudioProjectDetail }) {
               <div className="space-y-1.5 p-3">
                 <div className="flex items-baseline justify-between gap-2">
                   <span className="truncate text-[14px] font-medium">{a.pageName}</span>
-                  {a.daysRunning ? <span className="shrink-0 text-[12px] text-ink-3">{a.daysRunning} days</span> : a.source === "upload" ? <span className="text-[12px] text-ink-3">uploaded</span> : null}
+                  {a.daysRunning ? <span className="shrink-0 text-[12px] text-ink-3">{a.daysRunning} days</span> : a.source === "upload" ? <span className="text-[12px] text-ink-3">uploaded</span> : a.source === "site" ? <span className="text-[12px] text-ink-3">website</span> : null}
                 </div>
                 {a.analysis && <p className="line-clamp-2 text-[13px] text-ink-2">{a.analysis.hook}</p>}
                 {a.analysis && <div className="flex flex-wrap gap-1"><Pill>{a.analysis.format}</Pill>{a.analysis.emotion && <Pill>{a.analysis.emotion}</Pill>}</div>}
                 {a.libraryUrl && <a href={a.libraryUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12px] text-accent"><IconLink size={12} /> Ad Library</a>}
+                {a.siteUrl && <a href={a.siteUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12px] text-accent"><IconLink size={12} /> Website</a>}
               </div>
             </Card>
           ))}
