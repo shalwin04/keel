@@ -52,7 +52,8 @@ if (once) {
         log("autopilot checked", { id });
       }
     } catch (err) {
-      log("tick failed", { error: String(err) });
+      const cause = (err as { cause?: { message?: string } }).cause?.message;
+      log("tick failed", { error: String(err).split("\nparams")[0], cause, hint: cause && /does not exist/.test(cause) ? "run `npm run db:migrate`" : undefined });
     } finally {
       busy = false;
     }

@@ -75,8 +75,11 @@ app.notFound(async (c) => {
   return c.text("not found", 404);
 });
 app.onError((err, c) => {
-  log({ level: "error", path: c.req.path, error: err.message });
-  return c.json({ error: "something went wrong on our side" }, 500);
+  // Drizzle wraps the database's own message ("column … does not exist") in .cause.
+  const cause = (err as { cause?: { message?: string } }).cause?.message;
+  const missing = cause && /does not exist/.test(cause);
+  log({ level: "error", path: c.req.path, error: err.message.split("\nparams")[0], cause, hint: missing ? "run `npm run db:migrate`" : undefined });
+  return c.json({ error: missing ? "The database is behind this version of Keel. Run `npm run db:migrate` and restart." : "something went wrong on our side" }, 500);
 });
 
 // Production: the API serves the built web app too, so it's one origin and one deploy.
