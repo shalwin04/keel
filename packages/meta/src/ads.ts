@@ -20,6 +20,13 @@ export interface Creative {
   degrees_of_freedom_spec?: { creative_features_spec?: Record<string, { enroll_status?: string }> };
 }
 
+/** The useful part of a failed fetch ("fetch failed" hides it in .cause). */
+export function networkReason(err: unknown): string {
+  const e = err as { message?: string; name?: string; cause?: { code?: string; message?: string } };
+  if (e?.name === "TimeoutError") return "timed out after 30 s";
+  return e?.cause?.code ?? e?.cause?.message ?? e?.message ?? String(err);
+}
+
 export class GraphError extends Error {
   constructor(public path: string, message: string, public code?: number, public status?: number, public subcode?: number, public blame: string[] = []) {
     super(`Graph ${path}: ${message}`);
@@ -72,7 +79,16 @@ export class AdsGraphClient {
     // Transient Graph errors (rate limits, 5xx) get two retries with backoff.
     for (let attempt = 0; attempt < 3; attempt++) {
       // A hung request must never stall a cycle: Graph calls give up after 30 s.
-      const res = await this.fetchImpl(url, { method, body: method === "GET" ? undefined : body, signal: AbortSignal.timeout(30_000) });
+      let res: Response;
+      try {
+        res = await this.fetchImpl(url, { method, body: method === "GET" ? undefined : body, signal: AbortSignal.timeout(30_000) });
+      } catch (err) {
+        // Dropped connections (ECONNRESET, timeouts) are retried for reads. A write may already have happened, so it isn't repeated.
+        lastErr = new GraphError(path, `network: ${networkReason(err)}`);
+        if (method !== "GET") throw lastErr;
+        await new Promise((r) => setTimeout(r, 800 * 2 ** attempt));
+        continue;
+      }
       const json = (await res.json().catch(() => ({}))) as T & { error?: GraphErr };
       if (res.ok && !json.error) return json;
       const e = json.error;

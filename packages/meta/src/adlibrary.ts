@@ -1,3 +1,4 @@
+import { networkReason } from "./ads.ts";
 import { config } from "./config.ts";
 
 export interface LibraryAd {
@@ -27,7 +28,15 @@ export async function searchAdLibrary(o: { terms: string; countries: string[]; l
   u.searchParams.set("limit", String(o.limit ?? 25));
   u.searchParams.set("fields", FIELDS);
   u.searchParams.set("access_token", o.token ?? config.graph.token);
-  const res = await fetch(u, { signal: AbortSignal.timeout(30_000) });
+  let res: Response | undefined;
+  for (let attempt = 0; attempt < 3 && !res; attempt++) {
+    try { res = await fetch(u, { signal: AbortSignal.timeout(30_000) }); }
+    catch (err) {
+      if (attempt === 2) throw new Error(`Ad Library: couldn't reach Meta (${networkReason(err)})`);
+      await new Promise((r) => setTimeout(r, 1000 * 2 ** attempt));
+    }
+  }
+  if (!res) throw new Error("Ad Library: no response");
   const json = (await res.json()) as { data?: LibraryAd[]; error?: { message: string; error_user_msg?: string } };
   if (json.error) throw new Error(`Ad Library: ${json.error.error_user_msg ?? json.error.message}`);
   return json.data ?? [];
