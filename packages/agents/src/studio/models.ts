@@ -6,6 +6,7 @@ import {
 } from "@keel/core";
 import { callJson, config, editImage, generateImage, inlineImageHref, metaClient, museImage, renderSvgToPng, runTools, type Aspect, type AgentTool, type ImageInput, type ModelCallInfo, type SiteCrawl } from "@keel/meta";
 import { rulebookBlock } from "../prompts.ts";
+import { marketOf } from "./art.ts";
 
 export type StudioCall = (info: ModelCallInfo & { step: string }) => void;
 
@@ -224,14 +225,15 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
     generateScene: (direction, brief, product, variant) => timed("scene", async () => {
       const extra = VARIANTS[variant % VARIANTS.length]!;
       // Scenes are made at 4:5 (the main feed shape); square and 9:16 are cut from it with the subject kept central.
+      const market = `Set in ${marketOf(brief.countries)}: people, places and details authentic to it.`;
       if (product[0]) {
         try {
-          return { bytes: await museImage({ prompt: `@Image1${product[1] ? " and @Image2 show" : " shows"} the real ${brief.productName}. ${keepProduct(brief.productName)} ${shotPrompt(direction, `${extra} Keep the product near the centre with breathing room on all sides.`)}`, references: product.slice(0, 2), aspect: "4:5" }), productInScene: true };
+          return { bytes: await museImage({ prompt: `${market} @Image1${product[1] ? " and @Image2 show" : " shows"} the real ${brief.productName}. ${keepProduct(brief.productName)} ${shotPrompt(direction, `${extra} Keep the product near the centre with breathing room on all sides.`)}`, references: product.slice(0, 2), aspect: "4:5" }), productInScene: true };
         } catch (err) {
           console.warn(`[keel] studio: product-in-scene edit failed, generating an empty scene: ${(err as Error).message}`);
         }
       }
-      return { bytes: await museImage({ prompt: shotPrompt(direction, `${extra} Leave clear space in the centre for a product.`), aspect: "4:5" }), productInScene: false };
+      return { bytes: await museImage({ prompt: `${market} ${shotPrompt(direction, `${extra} Leave clear space in the centre for a product.`)}`, aspect: "4:5" }), productInScene: false };
     }),
 
     rankScenes: (candidates, product, direction) => call("art-direct", config.models.spark, RANK_SCENES,

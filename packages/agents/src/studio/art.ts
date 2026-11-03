@@ -7,6 +7,9 @@ import type { StudioModels } from "./models.ts";
 
 const CTA: Record<(typeof CTA_TYPES)[number], string> = { SHOP_NOW: "Shop now", LEARN_MORE: "Learn more", SIGN_UP: "Sign up", GET_OFFER: "Get offer", ORDER_NOW: "Order now", SEE_MORE: "See more" };
 const q = (s: string) => `"${s.replace(/"/g, "'")}"`;
+const regionNames = new Intl.DisplayNames(["en"], { type: "region" });
+/** "India", "India and the United Arab Emirates": where the cast and locations should feel at home. */
+export const marketOf = (codes: string[]) => codes.slice(0, 3).map((c) => { try { return regionNames.of(c) ?? c; } catch { return c; } }).join(" and ");
 
 /** The default visual language for a format when the art director hasn't picked one. */
 export function defaultStyle(format: FormatKey): VisualStyle {
@@ -62,6 +65,7 @@ export function artBrief(o: { c: Direction; brief: Brief; brand: string; style: 
     `STORY: ${c.hook}. ${c.angle}`,
     `SCENE: ${o.withText ? scene[f] : `A hero image of this moment: ${moment}. The product is the clear hero.`}`,
     `SUBJECT: ${product}`,
+    `MARKET: this runs in ${marketOf(brief.countries)}. People, streets, homes, weather and details must feel authentic to it.`,
     `STYLE: ${STYLE_BLOCK[style]}`,
     c.art.lighting && `LIGHT: ${c.art.lighting}.`, c.art.camera && photo && `CAMERA: ${c.art.camera}.`, c.art.grade && `GRADE: ${c.art.grade}.`, c.art.props && `PROPS: ${c.art.props}.`,
     `COMPOSITION: one clear focal point, strong figure-ground contrast, readable at phone size.${o.aspect === "9:16" ? " Keep text and key details out of the top 14% and bottom 25% (Stories and Reels interface)." : ""}`,
