@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import { BriefSchema, DesignDocSchema, FORMATS, TEMPLATES } from "@keel/core";
+import { BriefSchema, DesignDocSchema, FORMATS, TEMPLATES, VISUAL_STYLES } from "@keel/core";
 import { type createMarketing, type createRuntime } from "@keel/agents";
 import { schema } from "@keel/db";
 import { readMedia, saveMedia } from "@keel/meta";
@@ -118,7 +118,7 @@ export function studioRoutes(rt: Runtime, { studio, memory }: ReturnType<typeof 
     const found = await projectFor(c.get("user").id, c.req.param("id"), true);
     if (!found) return c.json({ error: "not found" }, 404);
     if ((found.p.concepts as { status?: string } | null)?.status === "making") return c.json({ error: "the agent is already making concepts" }, 409);
-    const body = z.object({ count: z.number().int().min(1).max(16).optional(), formats: z.array(z.enum(FORMATS)).optional(), remixOf: z.string().optional() }).safeParse(await c.req.json().catch(() => ({})));
+    const body = z.object({ count: z.number().int().min(1).max(16).optional(), formats: z.array(z.enum(FORMATS)).optional(), remixOf: z.string().optional(), style: z.enum(VISUAL_STYLES).optional() }).safeParse(await c.req.json().catch(() => ({})));
     if (!body.success) return c.json({ error: body.error.message }, 400);
     void studio.makeConcepts(found.p.id, body.data).catch(() => undefined);
     return c.json({ ok: true }, 202);
@@ -136,6 +136,27 @@ export function studioRoutes(rt: Runtime, { studio, memory }: ReturnType<typeof 
     } catch (err) {
       return c.json({ error: (err as Error).message }, 502);
     }
+  });
+
+  // ── Refine: one precise Muse Image edit ──────────────────────────────────
+  const Refine = z.object({ instruction: z.string().trim().min(3).max(300) });
+  r.post("/designs/:id/refine", async (c) => {
+    const user = c.get("user");
+    const [des] = await db.select().from(schema.studioDesigns).where(eq(schema.studioDesigns.id, c.req.param("id")));
+    if (!des || !(await projectFor(user.id, des.projectId, true))) return c.json({ error: "not found" }, 404);
+    const body = Refine.safeParse(await c.req.json().catch(() => ({})));
+    if (!body.success) return c.json({ error: "say what to change, in a few words" }, 400);
+    try { return c.json({ renderRef: await studio.refine(des.id, body.data.instruction, user.id) }); }
+    catch (err) { return c.json({ error: (err as Error).message }, 422); }
+  });
+  r.post("/projects/:id/concepts/:cid/refine", async (c) => {
+    const user = c.get("user");
+    const found = await projectFor(user.id, c.req.param("id"), true);
+    if (!found) return c.json({ error: "not found" }, 404);
+    const body = Refine.safeParse(await c.req.json().catch(() => ({})));
+    if (!body.success) return c.json({ error: "say what to change, in a few words" }, 400);
+    try { return c.json({ renderRef: await studio.refineConcept(found.p.id, c.req.param("cid"), body.data.instruction, user.id) }); }
+    catch (err) { return c.json({ error: (err as Error).message }, 422); }
   });
 
   // ── Brand memory: what has worked for this brand ─────────────────────────

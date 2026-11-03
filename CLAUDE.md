@@ -41,6 +41,7 @@ read site (`packages/meta/src/site.ts`: Playwright crawl, JSON-LD/Shopify produc
 
 - Research agent (`packages/agents/src/studio/research.ts`): Muse Wonder tool loop over Ad Library, competitor websites, web search (search grounding), reviews and Reddit → competitor insights + **voice of the customer** (personas, verbatim phrases).
 - Concept board (`makeConcepts`/`addConcepts` in `pipeline.ts`): Wonder writes many concepts across `FORMATS` (core `composeFormat`), Spark pre-scores each render. `vet()` keeps them honest: testimonials only quote reviews of the brand's own product, offers only if the brief has one, comparisons never name a competitor.
+- Art engine (`packages/agents/src/studio/art.ts`): `artBrief()` writes a 7-part brief (story, real product via @Image refs, `STYLE_BLOCK`, light/camera, composition with safe zones, exact text in quotes, avoid list); `designAd()` has Muse Image design the whole ad at the target aspect, Spark `verifyDesign()` checks every word and the product, one retouch edit, else fallback to a text-free key visual with Keel's live type. Whole designs are a single `design` image layer; other sizes via `resizeDesign()` (edit, not crop); `refine()` applies one worded edit. `museImage()` in `packages/meta/src/models.ts` (sizes overridable with `MUSE_IMAGE_SIZES`; `npm run image:probe` shows what the API accepts).
 - Brand memory (`packages/agents/src/memory.ts`): Spark reads the account's past ads with results, Wonder finds what wins; Autopilot learnings are added. Studio strategy and concepts read it.
 
 ## Watch cycle

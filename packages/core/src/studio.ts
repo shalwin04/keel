@@ -112,6 +112,28 @@ export const FORMAT_LABEL: Record<FormatKey, string> = {
 /** Which formats need generated scenes (0, 1 or 2 images). */
 export const FORMAT_SCENES: Record<FormatKey, number> = { classic: 1, notes: 0, tweet: 0, testimonial: 0, versus: 0, beforeafter: 2, offer: 0, meme: 1, ugc: 1 };
 
+/** Visual languages the art director can choose for a concept; each maps to an expert prompt block for Muse Image. */
+export const VISUAL_STYLES = ["photoreal", "lifestyle", "cinematic", "render3d", "clay", "isometric", "illustration", "risograph", "papercut", "collage"] as const;
+export type VisualStyle = (typeof VISUAL_STYLES)[number];
+export const STYLE_LABEL: Record<VisualStyle, string> = {
+  photoreal: "Studio photo", lifestyle: "Lifestyle photo", cinematic: "Cinematic still", render3d: "3D render", clay: "Clay 3D", isometric: "Isometric 3D",
+  illustration: "Flat illustration", risograph: "Risograph", papercut: "Paper-cut", collage: "Collage",
+};
+/** How each style should be rendered: the kind of brief a top photographer, 3D artist or illustrator would write. */
+export const STYLE_BLOCK: Record<VisualStyle, string> = {
+  photoreal: "Commercial product photograph: full-frame camera, 100mm macro lens at f/5.6, large softbox key light from 45° left with white bounce fill and a thin rim light from behind, true-to-life colour, crisp micro-detail on every material, natural contact shadows, premium set styling with tactile surfaces.",
+  lifestyle: "Editorial lifestyle photograph, candid and real: 35mm lens at f/2, natural window or golden-hour light, soft film grain with a Kodak Portra 400 palette, authentic location and props, real skin texture, shallow depth of field, a moment that feels caught, not posed.",
+  cinematic: "Cinematic film still: anamorphic 40mm lens, motivated practical lighting, light atmospheric haze, rich contrast with a teal-and-amber grade, an emotional storytelling moment frozen mid-action, the kind of frame from a premium brand film.",
+  render3d: "High-end 3D product render (Octane/Redshift look): physically based materials, studio HDRI with softbox reflections, subtle ambient occlusion, a few floating abstract props, smooth gradient backdrop in the brand colours, impeccably clean.",
+  clay: "Soft 3D claymation style: smooth matte clay materials, rounded friendly shapes, soft global illumination, a playful miniature set in the brand palette, charming and tactile like a stop-motion frame.",
+  isometric: "Isometric 3D diorama: a tiny detailed world on a floating base telling the story, tilt-shift miniature feel, soft shadows, brand colour palette, crisp and delightful.",
+  illustration: "Modern editorial flat vector illustration: bold geometric shapes, a limited palette from the brand colours, subtle grain texture, confident linework, magazine-cover quality.",
+  risograph: "Risograph-print illustration: two or three spot colours from the brand palette, visible grain and slight misregistration, bold simplified shapes, indie gig-poster energy.",
+  papercut: "Layered paper-cut craft art: real cut paper layers with physical depth and soft shadows between them, brand palette, handmade texture, photographed straight on.",
+  collage: "Mixed-media collage: cut-out photographic elements, torn paper edges, halftone textures, sticker accents, energetic Gen-Z editorial look.",
+};
+export const PHOTO_STYLES: VisualStyle[] = ["photoreal", "lifestyle", "cinematic"];
+
 export const FormatCopySchema = z.object({
   lines: z.array(z.string().max(90)).max(6).catch([]),
   quote: z.string().max(220).catch(""),
@@ -164,6 +186,10 @@ export const DirectionSchema = z.object({
   copy: FormatCopySchema.optional().catch(undefined),
   /** The customer persona this speaks to (from research into what customers say). */
   persona: z.string().max(80).optional().catch(undefined),
+  /** The visual language the art director chose for this idea. */
+  style: z.enum(VISUAL_STYLES).optional().catch(undefined),
+  /** The story moment the image shows: who, where, what is happening, the emotion. */
+  visual: z.string().max(600).optional().catch(undefined),
 });
 export type Direction = z.infer<typeof DirectionSchema>;
 export type ReelShot = Direction["storyboard"]["reel"][number];
@@ -553,6 +579,7 @@ export type ConceptScore = z.infer<typeof ConceptScoreSchema>;
 export type Concept = Direction & {
   id: string; format: FormatKey; sceneRef?: string; sceneRef2?: string; productInScene?: boolean; renderRef?: string;
   score?: ConceptScore; recommended?: boolean; addedAs?: number; remixOf?: { adId: string; pageName: string }; createdAt: string;
+  design?: DesignInfo; history?: string[];
 };
 
 export const BrandMemorySchema = z.object({
@@ -563,3 +590,15 @@ export const BrandMemorySchema = z.object({
   avoid: z.array(z.string().max(240)).max(6).catch([]),
 });
 export type BrandMemory = z.infer<typeof BrandMemorySchema>;
+
+/** Muse Spark's retoucher check on a generated design: is every word exact, is it our product, is it free of AI artefacts. */
+export const DesignCheckSchema = z.object({
+  texts: z.array(z.object({ expected: z.string(), found: z.string().catch(""), exact: z.boolean().catch(false) })).catch([]),
+  extraText: z.array(z.string()).max(8).catch([]),
+  product: z.number().min(0).max(1).catch(0.5),
+  quality: z.number().min(0).max(1).catch(0.5),
+  artifacts: z.array(z.string().max(160)).max(6).catch([]),
+  fix: z.string().max(300).catch(""),
+});
+export type DesignCheck = z.infer<typeof DesignCheckSchema> & { pass: boolean };
+export interface DesignInfo { mode: "generated" | "art"; style: VisualStyle; check?: DesignCheck; attempts: number; prompt: string }

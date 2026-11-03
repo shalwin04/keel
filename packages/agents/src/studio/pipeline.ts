@@ -6,8 +6,9 @@ import {
 } from "@keel/core";
 import { schema, type Db } from "@keel/db";
 import { type AdsGraphClient, inlineImageHref, readMedia, renderSvgToPng, saveMedia } from "@keel/meta";
-import { FORMAT_LABEL, FORMAT_SCENES, FORMATS, FormatCopySchema, type Concept, type FormatKey } from "@keel/core";
+import { FORMAT_LABEL, FORMAT_SCENES, FORMATS, FormatCopySchema, STYLE_LABEL, type Concept, type DesignInfo, type FormatKey, type VisualStyle } from "@keel/core";
 import type { Memory } from "../memory.ts";
+import { designAd, refineDesign, resizeDesign } from "./art.ts";
 import type { SceneRanking, StudioModels } from "./models.ts";
 import { gatherResearch } from "./research.ts";
 
@@ -22,13 +23,26 @@ const STEPS: Step[] = [
   { key: "storyboard", label: "Draw the Reel storyboard", status: "waiting" },
 ];
 export interface LogEntry { at: string; step: StepKey; text: string; kind: "info" | "decision" | "warn" }
-type DirRow = Direction & { sceneRef: string; sceneRef2?: string; sceneHistory: string[]; productInScene?: boolean; ranking?: SceneRanking; frames?: (string | null)[] };
+type DirRow = Direction & { design?: DesignInfo; sceneRef: string; sceneRef2?: string; sceneHistory: string[]; productInScene?: boolean; ranking?: SceneRanking; frames?: (string | null)[] };
 const hostOf = (u?: string) => { try { return new URL(u ?? "").host.replace(/^www\./, ""); } catch { return ""; } };
 /** Customer quotes that are reviews of this brand's own product (from its own site), the only ones a testimonial may use. */
 function ownQuotes(brief: Brief, research: Research | null) {
   const own = hostOf(brief.productUrl);
   return (research?.voice?.quotes ?? []).filter((q) => own && hostOf(q.url) === own);
 }
+
+const ASPECT = { square: "1:1", portrait: "4:5", story: "9:16" } as const;
+const ART_ENGINE = () => process.env.STUDIO_ART_ENGINE !== "0";
+
+/** A design Muse Image made whole: one full-bleed image layer (edited with Refine, not layer by layer). */
+function generatedDoc(ref: string, size: SizeKey, fit: "cover" | "contain" = "cover", base = "#000000"): DesignDoc {
+  const { w, h } = SIZES[size];
+  return { w, h, size, template: "hero", layers: [
+    ...(fit === "contain" ? [{ id: "bg", kind: "rect" as const, role: "panel" as const, x: 0, y: 0, w, h, fill: base, angle: 180, radius: 0, opacity: 1, shadow: false, locked: true }] : []),
+    { id: "design", kind: "image", role: "scene", ref, x: 0, y: 0, w, h, fit, radius: 0, shadow: false, opacity: 1, locked: true },
+  ] };
+}
+const isGenerated = (doc: DesignDoc) => doc.layers.some((l) => l.id === "design" && l.kind === "image");
 
 export interface ConceptBoard { status: "making" | "ready" | "failed"; items: Concept[]; error?: string; at: string }
 
@@ -255,6 +269,18 @@ export function createStudio(d: StudioDeps) {
     const dirs = (p.directions ?? []) as DirRow[];
     const dir = dirs[direction];
     if (!dir) throw new Error("no such direction");
+    if (dir.design?.mode === "generated") {
+      // A whole Muse Image design: design it again and re-lay every size.
+      const r = await designAd({ models: d.models, c: dir, brief, brand, aspect: "1:1", logoRef: brief.logoRef, style: dir.design.style, log: (t, k) => log(projectId, "compose", t, k) });
+      dirs[direction] = { ...dir, ...(r.mode === "art" ? { format: "classic" as const } : {}), design: r.info, sceneRef: r.ref, sceneHistory: [...(dir.sceneHistory ?? []), r.ref].slice(-8) };
+      await db.update(schema.studioProjects).set({ directions: dirs, updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
+      for (const des of await db.select().from(schema.studioDesigns).where(and(eq(schema.studioDesigns.projectId, projectId), eq(schema.studioDesigns.direction, direction)))) {
+        const doc = await docFor(dirs[direction]!, brief, brand, des.size as SizeKey);
+        await db.update(schema.studioDesigns).set({ doc, renderRef: await renderDesign(doc), check: null, updatedAt: new Date() }).where(eq(schema.studioDesigns.id, des.id));
+      }
+      if (audit) await d.audit(p.createdBy, "studio.scene_regenerated", { projectId, direction });
+      return r.ref;
+    }
     const product = await Promise.all(brief.productPhotos.slice(0, 2).map(imageInput));
     const scene = await artDirect(projectId, dir, brief, product, dir.title);
     const sceneRef = scene.ref;
@@ -287,7 +313,8 @@ export function createStudio(d: StudioDeps) {
     if (!p) throw new Error("not found");
     const brief = BriefSchema.parse(p.brief);
     const { name: brand } = await brandContext(p.brandId, brief);
-    const dir = ((p.directions ?? []) as (Direction & { sceneRef: string; productInScene?: boolean })[])[direction]!;
+    const dir = ((p.directions ?? []) as DirRow[])[direction]!;
+    if (dir.design?.mode === "generated") throw new Error("Muse Image designed this one whole, so it has no template. Use Refine to change it.");
     const designs = await db.select().from(schema.studioDesigns).where(and(eq(schema.studioDesigns.projectId, projectId), eq(schema.studioDesigns.direction, direction)));
     for (const des of designs) {
       const next = relayout(DesignDocSchema.parse(des.doc), composeInput(brief, brand, dir, dir.sceneRef, dir.productInScene), { template });
@@ -454,7 +481,14 @@ export function createStudio(d: StudioDeps) {
     return { ...c, format, copy };
   }
 
-  async function renderConcept(c: Direction & { format: FormatKey }, brief: Brief, brand: string, product: { dataUrl: string }[]) {
+  async function renderConcept(c: Direction & { format: FormatKey }, brief: Brief, brand: string, product: { dataUrl: string }[], projectId: string, style?: VisualStyle) {
+    if (ART_ENGINE()) {
+      const r = await designAd({ models: d.models, c, brief, brand, aspect: "1:1", logoRef: brief.logoRef, style: style ?? c.style, log: (t, k) => log(projectId, "compose", t, k) });
+      const doc = r.mode === "generated" ? generatedDoc(r.ref, "square") : compose({ ...composeInput(brief, brand, { ...c, format: "classic" }, r.ref, true), template: "hero", size: "square" });
+      const renderRef = await renderDesign(doc);
+      const score = await d.models.scoreConcept(await imageInput(renderRef), product[0]!, c).catch(() => undefined);
+      return { sceneRef: r.ref, sceneRef2: undefined, productInScene: true, renderRef, score, design: r.info, style: r.info.style };
+    }
     const n = FORMAT_SCENES[c.format];
     let sceneRef = brief.productPhotos[0]!, sceneRef2: string | undefined, productInScene = false;
     if (n >= 1) {
@@ -467,7 +501,63 @@ export function createStudio(d: StudioDeps) {
     const doc = compose({ ...composeInput(brief, brand, c, sceneRef, productInScene, sceneRef2), template: "hero", size: "square" });
     const renderRef = await renderDesign(doc);
     const score = await d.models.scoreConcept(await imageInput(renderRef), product[0]!, c).catch(() => undefined);
-    return { sceneRef, sceneRef2, productInScene, renderRef, score };
+    return { sceneRef, sceneRef2, productInScene, renderRef, score, design: undefined, style: c.style };
+  }
+
+  /** The doc for one size of a concept or direction: Muse Image's own design re-laid for that shape, or live type over its artwork. */
+  async function docFor(row: DirRow, brief: Brief, brand: string, size: SizeKey): Promise<DesignDoc> {
+    if (row.design?.mode === "generated") {
+      if (size === "square") return generatedDoc(row.sceneRef, size);
+      try {
+        const r = await resizeDesign({ models: d.models, c: row, brief, fromRef: row.sceneRef, aspect: ASPECT[size] });
+        if (r.ok) return generatedDoc(r.ref, size);
+      } catch { /* fall back below */ }
+      return generatedDoc(row.sceneRef, size, "contain", row.palette.base);
+    }
+    return compose({ ...composeInput(brief, brand, row, row.sceneRef, row.productInScene, row.sceneRef2), template: "hero", size });
+  }
+
+  /**
+   * Refine: one precise Muse Image edit on a design ("warmer light", "move the product left"). A Muse Image design is edited whole and its words
+   * re-checked; a layout design has its artwork edited and the live type kept.
+   */
+  async function refine(designId: string, instruction: string, userId: string) {
+    const [des] = await db.select().from(schema.studioDesigns).where(eq(schema.studioDesigns.id, designId));
+    if (!des) throw new Error("not found");
+    const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, des.projectId));
+    const brief = BriefSchema.parse(p!.brief);
+    const row = ((p!.directions ?? []) as DirRow[])[des.direction];
+    if (!row) throw new Error("no such direction");
+    const doc = DesignDocSchema.parse(des.doc);
+    const generated = isGenerated(doc);
+    const target = doc.layers.find((l) => l.kind === "image" && (l.id === "design" || l.role === "scene")) as { ref: string } | undefined;
+    if (!target) throw new Error("this design has no artwork to refine");
+    const r = await refineDesign({ models: d.models, c: row, brief, fromRef: target.ref, aspect: ASPECT[des.size as SizeKey], instruction, generated });
+    if (!r.ok) throw new Error(`Muse Image changed the text (${r.check?.texts.find((t) => !t.exact)?.found ?? "spelling"}), so the refine wasn't applied. Try a narrower instruction.`);
+    const next = { ...doc, layers: doc.layers.map((l) => (l.kind === "image" && (l.id === "design" || l.role === "scene") ? { ...l, ref: r.ref } : l)) };
+    const renderRef = await renderDesign(next);
+    await db.update(schema.studioDesigns).set({ doc: next, renderRef, check: null, updatedAt: new Date() }).where(eq(schema.studioDesigns.id, designId));
+    await log(des.projectId, "compose", `Refined ${row.title} (${des.size}): ${instruction.slice(0, 120)}`, "decision");
+    await d.audit(userId, "studio.design_refined", { projectId: des.projectId, designId, instruction: instruction.slice(0, 200) });
+    return renderRef;
+  }
+
+  /** Refine a concept on the board before it joins the campaign. */
+  async function refineConcept(projectId: string, conceptId: string, instruction: string, userId: string) {
+    const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    if (!p) throw new Error("not found");
+    const brief = BriefSchema.parse(p.brief);
+    const { name: brand } = await brandContext(p.brandId, brief);
+    const c = ((p.concepts as ConceptBoard | null)?.items ?? []).find((x) => x.id === conceptId);
+    if (!c?.sceneRef) throw new Error("no such concept");
+    const generated = c.design?.mode === "generated";
+    const r = await refineDesign({ models: d.models, c, brief, fromRef: c.sceneRef, aspect: "1:1", instruction, generated });
+    if (!r.ok) throw new Error("Muse Image changed the text, so the refine wasn't applied. Try a narrower instruction.");
+    const doc = generated ? generatedDoc(r.ref, "square") : compose({ ...composeInput(brief, brand, { ...c, format: c.design ? "classic" : c.format }, r.ref, true, c.sceneRef2), template: "hero", size: "square" });
+    const renderRef = await renderDesign(doc);
+    await setBoard(projectId, (b) => ({ ...b, items: b.items.map((x) => (x.id === conceptId ? { ...x, sceneRef: r.ref, renderRef, history: [...(x.history ?? []), x.renderRef!].filter(Boolean).slice(-6) } : x)) }));
+    await d.audit(userId, "studio.concept_refined", { projectId, conceptId, instruction: instruction.slice(0, 200) });
+    return renderRef;
   }
 
   /**
@@ -475,7 +565,7 @@ export function createStudio(d: StudioDeps) {
    * and Muse Spark scores it as a pre-flight check. The best three are recommended; a person picks what goes into the campaign.
    * With `remixOf`, Wonder rebuilds the structure of one long-running competitor ad for this brand instead.
    */
-  async function makeConcepts(projectId: string, o: { count?: number; formats?: FormatKey[]; remixOf?: string } = {}) {
+  async function makeConcepts(projectId: string, o: { count?: number; formats?: FormatKey[]; remixOf?: string; style?: VisualStyle } = {}) {
     const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
     if (!p) throw new Error("not found");
     const brief = BriefSchema.parse(p.brief);
@@ -500,7 +590,7 @@ export function createStudio(d: StudioDeps) {
         while (next < queue.length) {
           const c = queue[next++]!;
           try {
-            const r = await renderConcept(c, brief, brand, product);
+            const r = await renderConcept(c, brief, brand, product, projectId, o.style);
             made.push({ ...c, ...r, id: randomUUID(), createdAt: new Date().toISOString(), ...(remixAd ? { remixOf: { adId: remixAd.id, pageName: remixAd.pageName } } : {}) });
           } catch (err) {
             await log(projectId, "compose", `${c.title}: couldn't render (${(err as Error).message.slice(0, 80)})`, "warn");
@@ -512,7 +602,8 @@ export function createStudio(d: StudioDeps) {
         return { status: "ready", items, at: new Date().toISOString() };
       });
       const top = board.items.filter((x) => x.recommended);
-      await log(projectId, "check", `Muse Spark pre-scored ${made.length} concepts. Strongest: ${top.map((x) => `${x.title} (${FORMAT_LABEL[x.format]}, ${Math.round((x.score?.overall ?? 0) * 100)})`).join(", ")}`, "decision");
+      const gen = made.filter((x) => x.design?.mode === "generated").length;
+      await log(projectId, "check", `Muse Spark pre-scored ${made.length} concepts${ART_ENGINE() ? ` (${gen} designed whole by Muse Image, ${made.length - gen} with Keel's type over its artwork)` : ""}. Strongest: ${top.map((x) => `${x.title} (${FORMAT_LABEL[x.format]}${x.style ? `, ${STYLE_LABEL[x.style]}` : ""}, ${Math.round((x.score?.overall ?? 0) * 100)})`).join(", ")}`, "decision");
       return made.length;
     } catch (err) {
       await setBoard(projectId, (b) => ({ ...b, status: "failed", error: (err as Error).message.slice(0, 300), at: new Date().toISOString() }));
@@ -532,11 +623,12 @@ export function createStudio(d: StudioDeps) {
     const added: { id: string; index: number }[] = [];
     for (const c of picks) {
       const index = rows.length;
-      const { id: _id, renderRef: _r, score: _s, recommended: _rec, addedAs: _a, remixOf: _rm, createdAt: _c, sceneRef, sceneRef2, productInScene, ...dir } = c;
-      const row: DirRow = { ...dir, sceneRef: sceneRef ?? brief.productPhotos[0]!, sceneRef2, productInScene, sceneHistory: sceneRef ? [sceneRef] : [] };
+      const { id: _id, renderRef: _r, score: _s, recommended: _rec, addedAs: _a, remixOf: _rm, createdAt: _c, history: _h, sceneRef, sceneRef2, productInScene, design, ...dir } = c;
+      // Live type over Muse Image's artwork uses the hero layout; a whole Muse Image design keeps its own.
+      const row: DirRow = { ...dir, ...(design?.mode === "art" ? { format: "classic" as const } : {}), design, sceneRef: sceneRef ?? brief.productPhotos[0]!, sceneRef2, productInScene, sceneHistory: sceneRef ? [sceneRef] : [] };
       rows.push(row);
       for (const size of Object.keys(SIZES) as SizeKey[]) {
-        const doc = compose({ ...composeInput(brief, brand, row, row.sceneRef, row.productInScene, row.sceneRef2), template: "hero", size });
+        const doc = await docFor(row, brief, brand, size);
         await db.insert(schema.studioDesigns).values({ id: randomUUID(), projectId, direction: index, size, doc, renderRef: await renderDesign(doc), picked: true, check: c.score ? { pass: c.score.overall >= 0.5, score: c.score.overall, issues: c.score.notes ? [c.score.notes] : [] } : null });
       }
       added.push({ id: c.id, index });
@@ -550,6 +642,6 @@ export function createStudio(d: StudioDeps) {
     return added;
   }
 
-  return { create, run, list, regenerateScene, useScene, saveDesign, changeTemplate, launch, renderDesign, drawStoryboard, addDirection, extendLaunch, makeConcepts, addConcepts };
+  return { create, run, list, regenerateScene, useScene, saveDesign, changeTemplate, launch, renderDesign, drawStoryboard, addDirection, extendLaunch, makeConcepts, addConcepts, refine, refineConcept };
 }
 export type Studio = ReturnType<typeof createStudio>;

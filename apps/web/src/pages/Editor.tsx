@@ -22,7 +22,7 @@ export function Editor({ id, designId }: { id: string; designId: string }) {
   if (q.isLoading) return <Skeleton className="h-[600px]" />;
   if (q.isError || !design) return <ErrorNote error={q.error ?? "design not found"} />;
   const dir = q.data!.directions?.[design.direction];
-  return <EditorInner key={design.id} projectId={id} designId={designId} initial={design.doc} palette={dir ? [dir.palette.base, dir.palette.accent, dir.palette.ink, "#ffffff", "#111111"] : ["#ffffff", "#111111"]} siblings={q.data!.designs.filter((d) => d.direction === design.direction)} />;
+  return <EditorInner key={`${design.id}:${design.updatedAt}`} projectId={id} designId={designId} initial={design.doc} palette={dir ? [dir.palette.base, dir.palette.accent, dir.palette.ink, "#ffffff", "#111111"] : ["#ffffff", "#111111"]} siblings={q.data!.designs.filter((d) => d.direction === design.direction)} />;
 }
 
 function EditorInner({ projectId, designId, initial, palette, siblings }: { projectId: string; designId: string; initial: DesignDoc; palette: string[]; siblings: { id: string; size: string }[] }) {
@@ -106,7 +106,7 @@ function EditorInner({ projectId, designId, initial, palette, siblings }: { proj
               <li key={l.id}>
                 <div className={cx("flex items-center gap-2 px-3 py-1.5 text-[13px]", sel === l.id ? "bg-accent/10 text-ink" : "text-ink-2 hover:bg-fill")}>
                   <button className="min-w-0 flex-1 truncate text-left" onClick={() => setSel(l.id)}>
-                    {ROLE_LABEL[l.role] ?? l.role}{l.kind === "text" && <span className="text-ink-3"> · {l.text}</span>}
+                    {l.id === "design" ? "Muse Image design" : ROLE_LABEL[l.role] ?? l.role}{l.kind === "text" && <span className="text-ink-3"> · {l.text}</span>}
                   </button>
                   <button aria-label={l.locked ? "Unlock" : "Lock"} onClick={() => patch(l.id, { locked: !l.locked })} className="text-ink-3 hover:text-ink">
                     {l.locked ? <IconLock size={13} /> : <IconUnlock size={13} />}
@@ -130,6 +130,7 @@ function EditorInner({ projectId, designId, initial, palette, siblings }: { proj
                   style={{ left: `${(l.x / doc.w) * 100}%`, top: `${(l.y / doc.h) * 100}%`, width: `${(l.w / doc.w) * 100}%`, height: `${(l.h / doc.h) * 100}%`, outlineStyle: sel === l.id ? "solid" : undefined }} />
               ))}
             </div>
+            <RefineBox designId={designId} projectId={projectId} whole={doc.layers.some((l) => l.id === "design")} dirty={dirty} />
             <p className="hover-only mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[12px] text-ink-3">
               <span className="flex items-center gap-1">Drag to move</span>
               <span className="flex items-center gap-1"><Kbd>←</Kbd><Kbd>→</Kbd> nudge (Shift ×10)</span>
@@ -207,5 +208,25 @@ function Swatches({ label, value, palette, onChange }: { label: string; value: s
           className="h-7 w-7 cursor-pointer appearance-none rounded-full border hairline p-0 [&::-webkit-color-swatch]:rounded-full [&::-webkit-color-swatch]:border-0 [&::-webkit-color-swatch-wrapper]:p-0" />
       </div>
     </div>
+  );
+}
+
+/** Describe a change in words; Muse Image makes exactly that edit and Muse Spark re-checks the text. */
+function RefineBox({ designId, projectId, whole, dirty }: { designId: string; projectId: string; whole: boolean; dirty: boolean }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [text, setText] = useState("");
+  const go = useMutation({
+    mutationFn: () => studio.refine(designId, text),
+    onSuccess: () => { setText(""); toast("Refined"); void qc.invalidateQueries({ queryKey: ["studio", "project", projectId] }); },
+    onError: (e) => toast(e instanceof Error ? e.message : String(e), "error"),
+  });
+  return (
+    <form className="mt-4 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (text.trim().length > 2 && !dirty) go.mutate(); }}>
+      <input value={text} onChange={(e) => setText(e.target.value)} disabled={go.isPending}
+        placeholder={whole ? "Refine with Muse Image: warmer light, bigger product, add rain on the window…" : "Refine the artwork: warmer light, add rain, more depth…"}
+        className="h-10 min-w-0 flex-1 rounded-xl border hairline bg-surface px-3 text-[14px]" />
+      <Button type="submit" variant="primary" loading={go.isPending} disabled={text.trim().length < 3 || dirty} title={dirty ? "Save your layer edits first" : undefined}>Refine</Button>
+    </form>
   );
 }

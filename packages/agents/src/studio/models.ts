@@ -1,10 +1,10 @@
 import { z } from "zod";
 import {
   AdAnalysisSchema, DirectionSchema, InsightsSchema, LearnSchema, SiteProfileSchema,
-  BrandMemorySchema, ConceptScoreSchema, FORMATS, FormatCopySchema, VoiceSchema,
-  type AdAnalysis, type BrandMemory, type ConceptScore, type FormatKey, type Learn, type PerformanceSnapshot, type SiteProfile, type Voice, type Brief, type CompetitorAd, type Direction, type Insights, type ReelShot, type Rulebook,
+  BrandMemorySchema, ConceptScoreSchema, DesignCheckSchema, STYLE_BLOCK, FORMATS, FormatCopySchema, VISUAL_STYLES, VoiceSchema,
+  type AdAnalysis, type BrandMemory, type DesignCheck, type ConceptScore, type FormatKey, type Learn, type PerformanceSnapshot, type SiteProfile, type Voice, type Brief, type CompetitorAd, type Direction, type Insights, type ReelShot, type Rulebook,
 } from "@keel/core";
-import { callJson, config, editImage, generateImage, metaClient, renderSvgToPng, runTools, type AgentTool, type ImageInput, type ModelCallInfo, type SiteCrawl } from "@keel/meta";
+import { callJson, config, editImage, generateImage, inlineImageHref, metaClient, museImage, renderSvgToPng, runTools, type Aspect, type AgentTool, type ImageInput, type ModelCallInfo, type SiteCrawl } from "@keel/meta";
 import { rulebookBlock } from "../prompts.ts";
 
 export type StudioCall = (info: ModelCallInfo & { step: string }) => void;
@@ -34,6 +34,12 @@ export interface StudioModels {
   voiceOfCustomer(o: { brief: Brief; brand: string; quotes: { text: string; source: string }[] }): Promise<Omit<Voice, "quotes">>;
   /** The concept board: many ideas across formats, grounded in research, customer voice and brand memory. */
   planConcepts(o: { brief: Brief; brand: string; product: ImageInput[]; insights?: Insights; voice?: Voice; memory?: BrandMemory; rulebook?: Rulebook; count: number; formats: FormatKey[]; remix?: { image?: ImageInput; analysis?: AdAnalysis; pageName: string } }): Promise<Direction[]>;
+  /** Muse Image designs a finished ad from an art brief and references (product photos, logo), at an aspect ratio. */
+  designImage(o: { prompt: string; references: ImageInput[]; aspect: Aspect }): Promise<Buffer>;
+  /** One precise Muse Image edit of a design (retouch, refine, recompose for another aspect ratio). */
+  editDesign(o: { image: ImageInput; instruction: string; references: ImageInput[]; aspect: Aspect; expected: string[] }): Promise<Buffer>;
+  /** Muse Spark reads every word on a design and checks the product and artefacts. */
+  verifyDesign(design: ImageInput, product: ImageInput, expected: string[], concept: Direction): Promise<Omit<DesignCheck, "pass">>;
   /** Pre-flight: Muse Spark predicts how a rendered concept will do in the feed, before anything is spent. */
   scoreConcept(design: ImageInput, product: ImageInput, concept: Direction): Promise<ConceptScore>;
   /** Brand memory: what the brand's own past ads say works, from their results and Spark's read of each. */
@@ -66,6 +72,8 @@ const PLAN_SYSTEM = `You are Keel Studio's creative director for Meta ads (Faceb
 Using the competitor insights, the brief, the product photos and the brand rulebook, propose THREE clearly different creative directions that
 stand out from what competitors do. For each direction give:
 - title, angle (why this audience cares), hook, rationale (which insight it answers, in one sentence)
+- style: the visual language that fits the story and brand, one of ${VISUAL_STYLES.join(", ")} (vary it across the three directions; photo styles for most products)
+- visual: the story moment the hero image shows (who, where, what is happening, the emotion), one or two vivid sentences
 - scenePrompt: the hero image's environment only (place, light, mood, materials). Never describe the product itself; it is placed from the real photo.
 - art: an art director's brief that makes it look professionally shot: camera (body, lens, angle, distance), lighting (key/fill/rim, time of day),
   grade (colour grading, film look), composition (where the product sits; leave clean negative space in the bottom third for the headline),
@@ -128,7 +136,9 @@ Spread the ideas across personas and these formats: ${formats.join(", ")}. Forma
 - offer: only if the brief states an offer; headline supports it
 - meme: a relatable situation for the scenePrompt (no product), copy.top / copy.bottom = a meme caption in the audience's voice
 - ugc: a creator-style lifestyle scene with the product; copy.sticker = a POV-style caption (e.g. "POV: …")
-For each: title, format, persona, angle, hook, rationale (which insight or customer phrase it uses), scenePrompt (environment only, never the product itself; "" if the format needs none),
+Choose a visual style for each that fits its story and the brand (vary them across the board): ${VISUAL_STYLES.join(", ")}
+(photoreal = studio product photo, lifestyle = candid editorial photo, cinematic = film still, render3d / clay / isometric = 3D, illustration / risograph / papercut / collage = 2D).
+For each: title, format, style, visual (the story moment the image shows: who, where, what is happening, the emotion, in one or two vivid sentences), persona, angle, hook, rationale (which insight or customer phrase it uses), scenePrompt (environment only, never the product itself; "" if the format needs none),
 headline (≤ 6 words), subline (≤ 12 words), primaryText (≤ 2 short sentences), cta, palette {base, accent, ink} on-brand, copy (as above, other fields empty).
 Lead with customers' own words. Never invent claims, prices, discounts, reviews or numbers. Respect the rulebook.
 JSON: {"concepts":[ ... ]}`;
@@ -138,6 +148,15 @@ the format, how the hook is built, the layout, the pacing of the copy, the emoti
 with our product, our voice and our own claims. Never copy their words, logo, characters, imagery or brand assets: same skeleton, new everything.
 Return it in the concept format (title, format from: ${FORMATS.join(", ")}, persona, angle, hook, rationale = which structural idea you borrowed, scenePrompt, headline, subline, primaryText, cta, palette, copy).
 JSON: {"concepts":[ one concept ]}`;
+
+const VERIFY = `You are a meticulous retoucher checking a generated ad before it can run. Image 1 is the REAL product photo, image 2 the ad.
+1. Read every piece of text in the ad. For each expected string, report exactly what you found and whether it matches letter for letter
+   (case and punctuation may differ slightly; spelling may not). List any other text you see (extraText), ignoring text that is part of the product itself.
+2. product 0-1: is it unmistakably the same product as image 1 (shape, colour, logo, proportions), undistorted?
+3. quality 0-1: would a top agency ship it (realism or style executed well, light, composition)?
+4. artifacts: concrete AI flaws (warped hands, melted objects, gibberish letters, duplicated limbs, broken logo). Empty if none.
+5. fix: ONE precise edit instruction that fixes the most important problem (e.g. 'Change the headline text to exactly "Built for the downpour"'), or "".
+JSON: {"texts":[{"expected","found","exact"}],"extraText":[],"product","quality","artifacts":[],"fix"}`;
 
 const SCORE = `You are Meta's best creative strategist doing a pre-flight check on a static ad before money is spent. Image 1 is the REAL product photo, image 2 the ad.
 Score 0-1: scrollStop (would a thumb stop in a busy feed in 0.5 s: contrast, a human/emotional hook, novelty), clarity (is the message understood in 1 second),
@@ -151,7 +170,8 @@ enough impressions to trust), patterns shared by the losers, what to do more of 
 JSON: {"summary","winners":[],"losers":[],"doMore":[],"avoid":[]}`;
 
 const shotPrompt = (d: Direction, extra = "") => [
-  d.scenePrompt,
+  d.visual ? `${d.visual} ${d.scenePrompt}` : d.scenePrompt,
+  d.style && `Style: ${STYLE_BLOCK[d.style]}`,
   d.art.camera && `Camera: ${d.art.camera}.`, d.art.lighting && `Lighting: ${d.art.lighting}.`, d.art.grade && `Grade: ${d.art.grade}.`,
   d.art.composition && `Composition: ${d.art.composition}.`, d.art.props && `Props: ${d.art.props}.`,
   `Palette: ${d.palette.base}, ${d.palette.accent}.`, extra,
@@ -203,14 +223,15 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
 
     generateScene: (direction, brief, product, variant) => timed("scene", async () => {
       const extra = VARIANTS[variant % VARIANTS.length]!;
+      // Scenes are made at 4:5 (the main feed shape); square and 9:16 are cut from it with the subject kept central.
       if (product[0]) {
         try {
-          return { bytes: await editImage({ image: product[0], prompt: `${keepProduct(brief.productName)} ${shotPrompt(direction, extra)}` }), productInScene: true };
+          return { bytes: await museImage({ prompt: `@Image1${product[1] ? " and @Image2 show" : " shows"} the real ${brief.productName}. ${keepProduct(brief.productName)} ${shotPrompt(direction, `${extra} Keep the product near the centre with breathing room on all sides.`)}`, references: product.slice(0, 2), aspect: "4:5" }), productInScene: true };
         } catch (err) {
           console.warn(`[keel] studio: product-in-scene edit failed, generating an empty scene: ${(err as Error).message}`);
         }
       }
-      return { bytes: await generateImage({ prompt: shotPrompt(direction, `${extra} Leave clear space in the centre for a product.`), size: "1024x1024" }), productInScene: false };
+      return { bytes: await museImage({ prompt: shotPrompt(direction, `${extra} Leave clear space in the centre for a product.`), aspect: "4:5" }), productInScene: false };
     }),
 
     rankScenes: (candidates, product, direction) => call("art-direct", config.models.spark, RANK_SCENES,
@@ -253,7 +274,7 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
         ...o.quotes.slice(0, 80).map((q, i) => `[${i}] (${q.source}) ${q.text.slice(0, 500)}`)].join("\n"), [], "high"),
 
     async planConcepts(o) {
-      const schema = z.object({ concepts: z.array(DirectionSchema.extend({ format: z.enum(FORMATS).catch("classic"), copy: FormatCopySchema.catch(FormatCopySchema.parse({})), persona: z.string().max(80).catch("") })).min(1).max(24) });
+      const schema = z.object({ concepts: z.array(DirectionSchema.extend({ format: z.enum(FORMATS).catch("classic"), style: z.enum(VISUAL_STYLES).optional().catch(undefined), copy: FormatCopySchema.catch(FormatCopySchema.parse({})), persona: z.string().max(80).catch("") })).min(1).max(24) });
       const ctx = [`Brand: ${o.brand}`, `Product: ${o.brief.productName} (${o.brief.productUrl})`, o.brief.price && `Price: ${o.brief.price}`, o.brief.offer ? `Offer: ${o.brief.offer}` : "No offer.",
         `Audience: ${o.brief.audience || "not stated"} · ${o.brief.countries.join(", ")}`, o.brief.notes && `Notes: ${o.brief.notes}`,
         o.insights && `COMPETITOR INSIGHTS: ${JSON.stringify(o.insights)}`,
@@ -264,6 +285,14 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
         [...(o.remix?.image ? [o.remix.image] : []), ...o.product.slice(0, 2)], "high");
       return out.concepts;
     },
+
+    designImage: (o) => timed("design", () => museImage({ prompt: o.prompt, references: o.references, aspect: o.aspect })),
+    editDesign: (o) => timed("retouch", () => museImage({
+      prompt: `@Image1 is the ad to edit${o.references.length ? `; @Image2 is the real product (keep it exactly)` : ""}. ${o.instruction}${o.expected.length ? `\nThe text must read exactly: ${o.expected.map((t) => `"${t}"`).join(", ")}.` : ""}\nChange nothing else.`,
+      references: [o.image, ...o.references], aspect: o.aspect,
+    })),
+    verifyDesign: (design, product, expected, concept) => call("verify", config.models.spark, VERIFY, DesignCheckSchema,
+      `Format: ${concept.format ?? "classic"}.\nExpected text:\n${expected.map((t) => `- "${t}"`).join("\n")}\nImage 1 = REAL PRODUCT, Image 2 = THE AD.`, [product, design], "medium"),
 
     scoreConcept: (design, product, concept) => call("preflight", config.models.spark, SCORE, ConceptScoreSchema,
       `Format: ${concept.format ?? "classic"}. Headline: "${concept.headline}". Persona: ${concept.persona ?? "general"}.\nImage 1 = REAL PRODUCT, Image 2 = THE AD.`, [product, design], "medium"),
@@ -359,6 +388,29 @@ export function fakeStudioModels(): StudioModels {
         { ...base, title: "Soaked vs dry", format: "beforeafter", copy: FormatCopySchema.parse({ before: "Soaked", after: "Dry", scene2: "A soaked commuter on a platform" }) },
       ];
       return (o.remix ? [{ ...all[0]!, title: `Remix of ${o.remix.pageName}`, rationale: "Borrowed the list structure" }] : all).filter((c) => o.formats.includes(c.format as FormatKey) || o.remix).slice(0, o.count);
+    },
+    /** A stand-in "design": the product photo on a styled backdrop with the quoted words from the brief set as type. */
+    async designImage(o) {
+      const sizes: Record<string, [number, number]> = { "1:1": [1024, 1024], "4:5": [1024, 1280], "9:16": [1024, 1820], "16:9": [1820, 1024] };
+      const [w, h] = sizes[o.aspect] ?? [1024, 1024];
+      const textless = /NO TEXT:/.test(o.prompt);
+      const words = textless ? [] : [...o.prompt.matchAll(/"([^"]{2,80})"/g)].map((m) => m[1]!).filter((x, i, a) => a.indexOf(x) === i).slice(0, 5);
+      const pal = [...o.prompt.matchAll(/#[0-9a-fA-F]{6}/g)].map((m) => m[0]);
+      const href = o.references[0] && "dataUrl" in o.references[0] ? o.references[0].dataUrl : "";
+      const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><defs><radialGradient id="g" cx=".5" cy=".38" r=".8"><stop offset="0" stop-color="${pal[1] ?? "#e0a23b"}"/><stop offset="1" stop-color="${pal[0] ?? "#0f2a3d"}"/></radialGradient></defs><rect width="${w}" height="${h}" fill="url(#g)"/>`
+        + `<ellipse cx="${w / 2}" cy="${h * 0.66}" rx="${w * 0.3}" ry="${w * 0.05}" fill="#000" opacity=".25"/>`
+        + (href ? `<image href="${href}" x="${w * 0.2}" y="${h * 0.2}" width="${w * 0.6}" height="${h * 0.48}" preserveAspectRatio="xMidYMid meet"/>` : "")
+        + words.map((t, i) => `<text x="${w / 2}" y="${h * 0.12 + i * 70}" text-anchor="middle" font-family="Helvetica" font-weight="${i ? 500 : 800}" font-size="${i ? 34 : 60}" fill="#fff">${esc(t)}</text>`).join("")
+        + `</svg>`;
+      return renderSvgToPng(svg, w, h);
+    },
+    async editDesign(o) {
+      return Buffer.from(("dataUrl" in o.image ? o.image.dataUrl : "").split(",")[1] ?? "", "base64");
+    },
+    async verifyDesign(_d, _p, expected) {
+      const fail = process.env.FAKE_DESIGN_TEXT_FAIL === "1";
+      return { texts: expected.map((e) => ({ expected: e, found: fail ? e.slice(0, -1) : e, exact: !fail })), extraText: [], product: 0.9, quality: 0.8, artifacts: [], fix: fail ? "Fix the headline spelling" : "" };
     },
     async scoreConcept(_d, _p, c) {
       const n = (c.title.length * 7) % 30;

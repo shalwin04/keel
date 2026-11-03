@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { FORMAT_LABEL, FORMATS, type FormatKey } from "@keel/core/studio";
+import { FORMAT_LABEL, FORMATS, STYLE_LABEL, VISUAL_STYLES, type FormatKey, type VisualStyle } from "@keel/core/studio";
 import { adsManagerUrl, api, mediaUrl, studio, type Concept, type StudioDesign, type StudioDirection, type StudioProjectDetail } from "../api.ts";
 import { IconArrowRight, IconCheck, IconChevron, IconLink, IconLock, IconRefresh, IconSparkle, IconX } from "../components/Icons.tsx";
 import { useToast } from "../components/Toast.tsx";
@@ -323,6 +323,7 @@ function DirectionRow({ p, d, index, designs, readOnly }: { p: StudioProjectDeta
   const template = useMutation({ mutationFn: (t: string) => studio.template(p.id, index, t), onSuccess: refresh });
   const check = designs.find((x) => x.size === "square")?.check;
   const tmpl = designs[0]?.doc.template ?? "hero";
+  const whole = designs.some((x) => x.doc.layers.some((l) => l.id === "design"));
   const busy = scene.isPending || template.isPending || useScene.isPending;
 
   return (
@@ -339,8 +340,9 @@ function DirectionRow({ p, d, index, designs, readOnly }: { p: StudioProjectDeta
         </div>
         {canEdit && (
           <div className="flex flex-wrap items-center gap-2">
-            <Segmented label="Layout" value={tmpl} onChange={(t) => template.mutate(t)} options={[{ value: "hero", label: "Hero" }, { value: "split", label: "Split" }, { value: "card", label: "Card" }]} />
-            <Button size="sm" icon={busy ? undefined : <IconRefresh size={14} />} loading={scene.isPending} onClick={() => scene.mutate()}>New scene</Button>
+            {whole ? <span className="self-center text-[12px] text-ink-3">Designed by Muse Image · open a size to refine it</span>
+              : (!d.format || d.format === "classic") && <Segmented label="Layout" value={tmpl} onChange={(t) => template.mutate(t)} options={[{ value: "hero", label: "Hero" }, { value: "split", label: "Split" }, { value: "card", label: "Card" }]} />}
+            <Button size="sm" icon={busy ? undefined : <IconRefresh size={14} />} loading={scene.isPending} onClick={() => scene.mutate()}>{whole ? "Design again" : "New scene"}</Button>
             <Button size="sm" variant={picked ? "primary" : "secondary"} icon={picked ? <IconCheck size={14} /> : undefined} loading={pick.isPending} onClick={() => pick.mutate()}>{picked ? "Picked" : "Pick"}</Button>
           </div>
         )}
@@ -495,8 +497,9 @@ function ConceptsView({ p }: { p: StudioProjectDetail }) {
   const board = p.concepts;
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [formats, setFormats] = useState<Set<FormatKey>>(new Set());
+  const [style, setStyle] = useState<VisualStyle | "">("");
   const refresh = () => void qc.invalidateQueries({ queryKey: ["studio", "project", p.id] });
-  const make = useMutation({ mutationFn: () => studio.makeConcepts(p.id, { formats: formats.size ? [...formats] : undefined }), onSuccess: refresh, onError: (e) => toast(e instanceof Error ? e.message : String(e), "error") });
+  const make = useMutation({ mutationFn: () => studio.makeConcepts(p.id, { formats: formats.size ? [...formats] : undefined, style: style || undefined }), onSuccess: refresh, onError: (e) => toast(e instanceof Error ? e.message : String(e), "error") });
   const add = useMutation({
     mutationFn: () => studio.addConcepts(p.id, [...picked]),
     onSuccess: (r) => { setPicked(new Set()); refresh(); toast(p.status === "launched" ? `Added ${r.added.length} ads to the live campaign` : `Added ${r.added.length} to the campaign`); },
@@ -524,6 +527,15 @@ function ConceptsView({ p }: { p: StudioProjectDetail }) {
             <span className="self-center pl-1 text-[12px] text-ink-3">{formats.size ? "Only these formats" : "All formats"}</span>
           </div>
         )}
+        {canWrite && (
+          <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            <span className="pr-1 text-[12px] font-medium text-ink-3">Look</span>
+            {(["", ...VISUAL_STYLES] as const).map((st) => (
+              <button key={st || "auto"} type="button" onClick={() => setStyle(st)}
+                className={cx("press rounded-full border px-3 py-1 text-[13px] transition-colors duration-150", style === st ? "border-accent bg-accent/10 text-accent" : "hairline text-ink-2")}>{st ? STYLE_LABEL[st] : "Art director picks"}</button>
+            ))}
+          </div>
+        )}
         {board?.status === "failed" && <p className="mt-3 text-[13px] text-critical">{board.error}</p>}
       </Card>
 
@@ -532,7 +544,7 @@ function ConceptsView({ p }: { p: StudioProjectDetail }) {
       ) : !items.length ? null : (
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
           {making && Array.from({ length: 2 }, (_, i) => <Skeleton key={`m${i}`} className="aspect-square" />)}
-          {items.map((c, i) => <ConceptCard key={c.id} c={c} i={i} picked={picked.has(c.id)} onPick={canWrite && c.addedAs === undefined ? () => setPicked((s) => { const n = new Set(s); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; }) : undefined} />)}
+          {items.map((c, i) => <ConceptCard key={c.id} c={c} i={i} projectId={p.id} canWrite={canWrite} picked={picked.has(c.id)} onPick={canWrite && c.addedAs === undefined ? () => setPicked((s) => { const n = new Set(s); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; }) : undefined} />)}
         </div>
       )}
 
@@ -548,8 +560,17 @@ function ConceptsView({ p }: { p: StudioProjectDetail }) {
   );
 }
 
-function ConceptCard({ c, i, picked, onPick }: { c: Concept; i: number; picked: boolean; onPick?: () => void }) {
+function ConceptCard({ c, i, picked, onPick, projectId, canWrite }: { c: Concept; i: number; picked: boolean; onPick?: () => void; projectId: string; canWrite: boolean }) {
   const sc = c.score;
+  const qc = useQueryClient();
+  const toast = useToast();
+  const [refining, setRefining] = useState(false);
+  const [text, setText] = useState("");
+  const refine = useMutation({
+    mutationFn: () => studio.refineConcept(projectId, c.id, text),
+    onSuccess: () => { setText(""); setRefining(false); toast("Refined"); void qc.invalidateQueries({ queryKey: ["studio", "project", projectId] }); },
+    onError: (e) => toast(e instanceof Error ? e.message : String(e), "error"),
+  });
   return (
     <Card className={cx("animate-enter overflow-hidden transition-shadow duration-200", picked && "ring-2 ring-accent")} style={{ animationDelay: `${Math.min(i, 12) * 25}ms` }}>
       <button type="button" disabled={!onPick} onClick={onPick} className="press relative block w-full text-left disabled:cursor-default">
@@ -574,6 +595,16 @@ function ConceptCard({ c, i, picked, onPick }: { c: Concept; i: number; picked: 
           </div>
         )}
         {sc?.notes && <p className="line-clamp-2 text-[12px] text-ink-2">{sc.notes}</p>}
+        <div className="flex items-center justify-between gap-2 pt-0.5 text-[11px] text-ink-3">
+          <span className="truncate">{c.style ? STYLE_LABEL[c.style] : ""}{c.design ? ` · ${c.design.mode === "generated" ? "designed by Muse Image" : "Keel type on Muse art"}` : ""}</span>
+          {canWrite && c.addedAs === undefined && c.sceneRef && <button type="button" onClick={() => setRefining((v) => !v)} className="press shrink-0 font-medium text-accent">Refine</button>}
+        </div>
+        {refining && (
+          <form className="flex gap-1.5 pt-1" onSubmit={(e) => { e.preventDefault(); if (text.trim().length > 2) refine.mutate(); }}>
+            <input autoFocus value={text} onChange={(e) => setText(e.target.value)} disabled={refine.isPending} placeholder="Warmer light, bigger product…" className="h-8 min-w-0 flex-1 rounded-lg border hairline bg-surface px-2 text-[13px]" />
+            <Button type="submit" size="sm" variant="primary" loading={refine.isPending}>Go</Button>
+          </form>
+        )}
       </div>
     </Card>
   );

@@ -79,6 +79,56 @@ export async function callJson<T>(o: JsonCallOpts<T>): Promise<T> {
   throw new Error(`Model ${o.model} did not return valid JSON`);
 }
 
+// ── Muse Image: aspect ratios and multiple references ───────────────────────
+
+export type Aspect = "1:1" | "4:5" | "9:16" | "16:9";
+/** Pixel sizes sent for each aspect ratio. MUSE_IMAGE_SIZES (JSON) overrides them once the probe shows what the API accepts. */
+const SIZE_FOR: Record<Aspect, string> = { "1:1": "1024x1024", "4:5": "1024x1280", "9:16": "1024x1792", "16:9": "1792x1024", ...JSON.parse(process.env.MUSE_IMAGE_SIZES ?? "{}") };
+const ASPECT_WORDS: Record<Aspect, string> = { "1:1": "square 1:1", "4:5": "vertical 4:5 portrait", "9:16": "tall vertical 9:16 full-screen (Stories/Reels)", "16:9": "wide 16:9" };
+const unsupportedSizes = new Set<string>();
+
+/**
+ * Muse Image with up to 10 references (product, logo, style, character…), at a target aspect ratio.
+ * References go to the Responses API as input images, named in the prompt as @Image1, @Image2… The aspect ratio is stated in the prompt and,
+ * where the API accepts it, as a size. Text-only prompts use /images/generations at the matching size.
+ */
+export async function museImage(o: { prompt: string; references?: ImageInput[]; aspect?: Aspect; onCall?: (i: ModelCallInfo) => void }): Promise<Buffer> {
+  const aspect = o.aspect ?? "1:1";
+  const prompt = `${o.prompt}\nFormat: ${ASPECT_WORDS[aspect]} composition, framed for that shape.`;
+  const refs = (o.references ?? []).slice(0, 10);
+  if (!refs.length) {
+    const size = unsupportedSizes.has(SIZE_FOR[aspect]) ? "1024x1024" : SIZE_FOR[aspect];
+    try {
+      return await generateImage({ prompt, size, onCall: o.onCall });
+    } catch (err) {
+      if (size === "1024x1024" || !/size|dimension|resolution|invalid/i.test((err as Error).message)) throw err;
+      unsupportedSizes.add(size);
+      return generateImage({ prompt, size: "1024x1024", onCall: o.onCall });
+    }
+  }
+  const t0 = Date.now();
+  const sized = !unsupportedSizes.has(`edit:${SIZE_FOR[aspect]}`) && process.env.MUSE_EDIT_SIZE !== "0";
+  const body = (withSize: boolean) => JSON.stringify({
+    model: config.models.image,
+    input: [{ role: "user", content: [...refs.map((r) => ({ type: "input_image", image_url: "url" in r ? r.url : r.dataUrl })), { type: "input_text", text: prompt }] }],
+    ...(withSize ? { size: SIZE_FOR[aspect] } : {}),
+  });
+  const post = (withSize: boolean) => fetch(`${config.metaApiBase}/responses`, {
+    method: "POST", headers: { Authorization: `Bearer ${config.metaApiKey}`, "Content-Type": "application/json" }, body: body(withSize), signal: AbortSignal.timeout(300_000),
+  });
+  let res = await post(sized && aspect !== "1:1");
+  if (!res.ok && sized && aspect !== "1:1" && res.status === 400) {
+    unsupportedSizes.add(`edit:${SIZE_FOR[aspect]}`);
+    res = await post(false);
+  }
+  if (!res.ok) throw new Error(`Muse Image ${res.status}: ${(await res.text()).slice(0, 300)}`);
+  const json = (await res.json()) as { output?: { type: string; result?: string }[]; usage?: { input_tokens?: number; output_tokens?: number }; error?: { message?: string } };
+  o.onCall?.({ model: config.models.image, ms: Date.now() - t0, inputTokens: json.usage?.input_tokens, outputTokens: json.usage?.output_tokens });
+  const img = json.output?.find((x) => x.type === "image_generation_call" && x.result)?.result;
+  if (!img) throw new Error(`Muse Image returned no image${json.error?.message ? `: ${json.error.message}` : ""}`);
+  return Buffer.from(img, "base64");
+}
+
 /** A tool the model can call during an agent loop. `run` returns what the model sees (plain text or JSON). */
 export interface AgentTool {
   name: string;

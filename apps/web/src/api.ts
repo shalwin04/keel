@@ -1,4 +1,4 @@
-import type { BrandMemory, Brief, CompetitorAd, Concept, DesignDoc, Direction, FormatKey, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile, Voice } from "@keel/core/studio";
+import type { VisualStyle, BrandMemory, Brief, CompetitorAd, Concept, DesignDoc, Direction, FormatKey, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile, Voice } from "@keel/core/studio";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Role = "owner" | "reviewer" | "viewer";
 
@@ -127,7 +127,7 @@ export const ACTION_LABEL: Record<string, string> = {
 };
 
 // ── Studio ───────────────────────────────────────────────────────────────────
-export type { BrandMemory, Brief, CompetitorAd, Concept, DesignDoc, Direction, FormatKey, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile, Voice };
+export type { VisualStyle, BrandMemory, Brief, CompetitorAd, Concept, DesignDoc, Direction, FormatKey, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile, Voice };
 export interface ConceptBoard { status: "making" | "ready" | "failed"; items: Concept[]; error?: string; at: string }
 export interface MemoryInfo { brandId: string; summary: BrandMemory | null; ads: { adId: string; name: string; imageRef?: string; impressions: number; ctr: number; cpc: number; spend: number; purchases?: number; roas?: number; analysis?: { hook: string; format: string } }[]; learnings: { at: string; text: string; source: string }[]; updatedAt: string }
 export interface StudioStep { key: string; label: string; status: "waiting" | "running" | "done" | "failed" | "skipped"; detail?: string; ms?: number }
@@ -165,7 +165,9 @@ export const studio = {
   storyboard: (id: string, n: number) => request<{ frames: number }>(`/api/studio/projects/${id}/directions/${n}/storyboard`, { method: "POST" }),
   launch: (id: string) => request<NonNullable<StudioProject["launch"]>>(`/api/studio/projects/${id}/launch`, { method: "POST" }),
   downloadUrl: (designId: string) => `/api/studio/designs/${designId}/download`,
-  makeConcepts: (id: string, b: { count?: number; formats?: FormatKey[]; remixOf?: string } = {}) => request(`/api/studio/projects/${id}/concepts`, { method: "POST", body: JSON.stringify(b) }),
+  refine: (designId: string, instruction: string) => request<{ renderRef: string }>(`/api/studio/designs/${designId}/refine`, { method: "POST", body: JSON.stringify({ instruction }) }),
+  refineConcept: (id: string, cid: string, instruction: string) => request<{ renderRef: string }>(`/api/studio/projects/${id}/concepts/${cid}/refine`, { method: "POST", body: JSON.stringify({ instruction }) }),
+  makeConcepts: (id: string, b: { count?: number; formats?: FormatKey[]; remixOf?: string; style?: VisualStyle } = {}) => request(`/api/studio/projects/${id}/concepts`, { method: "POST", body: JSON.stringify(b) }),
   addConcepts: (id: string, ids: string[]) => request<{ added: { id: string; index: number }[] }>(`/api/studio/projects/${id}/concepts/add`, { method: "POST", body: JSON.stringify({ ids }) }),
   memory: (accountId: string) => request<MemoryInfo | null>(`/api/studio/memory?accountId=${encodeURIComponent(accountId)}`),
   memoryStatus: (accountId: string) => request<{ refreshing: boolean }>(`/api/studio/memory/status?accountId=${encodeURIComponent(accountId)}`),
