@@ -53,8 +53,17 @@ const responses = async (name: string, text: string, images: string[], extra: Re
 console.log("\n■ References (/responses)");
 await responses("edit-1ref", "@Image1 is a rain jacket. Place it on a hook by a rainy window, photoreal. No text.", [product]);
 await responses("edit-2refs", "@Image1 is a rain jacket, @Image2 is the brand logo. Make a photoreal ad: the jacket on a model on a rainy street; put the logo from @Image2 small in the top-left corner exactly as given.", [product, logo]);
-await responses("edit-4:5-size", "@Image1 is a rain jacket on a rainy street, photoreal, vertical 4:5. No text.", [product], { size: "1024x1280" });
-await responses("edit-9:16-aspect", "@Image1 is a rain jacket on a rainy street, photoreal, tall 9:16. No text.", [product], { aspect_ratio: "9:16" });
+// What Keel actually uses: the shape stated in the prompt, checked, with a canvas retry.
+const { museImage, imageSize } = await import("@keel/meta");
+for (const aspect of ["4:5", "9:16"] as const) {
+  const t0 = t();
+  try {
+    const b = await museImage({ prompt: "@Image1 is a rain jacket. Show it worn by a commuter on a rainy street, photoreal. No text.", references: [{ dataUrl: `data:image/png;base64,${product}` }], aspect });
+    await writeFile(join(out, `keel-${aspect.replace(":", "x")}.webp`), b);
+    const sz = imageSize(b);
+    console.log(`  keel museImage ${aspect.padEnd(12)} → ${sz ? `${sz.w}x${sz.h}` : "?"} (${((t() - t0) / 1000).toFixed(0)} s)`);
+  } catch (err) { console.log(`  keel museImage ${aspect}: ${(err as Error).message.slice(0, 160)}`); }
+}
 
 console.log("\n■ Text in the image");
 const headline = "Built for the downpour";

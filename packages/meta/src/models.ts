@@ -106,27 +106,58 @@ export async function museImage(o: { prompt: string; references?: ImageInput[]; 
       return generateImage({ prompt, size: "1024x1024", onCall: o.onCall });
     }
   }
-  const t0 = Date.now();
-  const sized = !unsupportedSizes.has(`edit:${SIZE_FOR[aspect]}`) && process.env.MUSE_EDIT_SIZE !== "0";
-  const body = (withSize: boolean) => JSON.stringify({
-    model: config.models.image,
-    input: [{ role: "user", content: [...refs.map((r) => ({ type: "input_image", image_url: "url" in r ? r.url : r.dataUrl })), { type: "input_text", text: prompt }] }],
-    ...(withSize ? { size: SIZE_FOR[aspect] } : {}),
-  });
-  const post = (withSize: boolean) => fetch(`${config.metaApiBase}/responses`, {
-    method: "POST", headers: { Authorization: `Bearer ${config.metaApiKey}`, "Content-Type": "application/json" }, body: body(withSize), signal: AbortSignal.timeout(300_000),
-  });
-  let res = await post(sized && aspect !== "1:1");
-  if (!res.ok && sized && aspect !== "1:1" && res.status === 400) {
-    unsupportedSizes.add(`edit:${SIZE_FOR[aspect]}`);
-    res = await post(false);
-  }
-  if (!res.ok) throw new Error(`Muse Image ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const json = (await res.json()) as { output?: { type: string; result?: string }[]; usage?: { input_tokens?: number; output_tokens?: number }; error?: { message?: string } };
-  o.onCall?.({ model: config.models.image, ms: Date.now() - t0, inputTokens: json.usage?.input_tokens, outputTokens: json.usage?.output_tokens });
-  const img = json.output?.find((x) => x.type === "image_generation_call" && x.result)?.result;
-  if (!img) throw new Error(`Muse Image returned no image${json.error?.message ? `: ${json.error.message}` : ""}`);
-  return Buffer.from(img, "base64");
+  // The Responses API takes no size: the shape comes from the prompt (stated first and last), and is checked on the result.
+  const want = { "1:1": 1, "4:5": 0.8, "9:16": 0.5625, "16:9": 16 / 9 }[aspect];
+  const call = async (strong: boolean) => {
+    const t0 = Date.now();
+    // Edits tend to keep the input's shape; on a retry, an empty canvas of the right shape is added as the last reference.
+    const canvas = strong && refs.length < 10 ? `data:image/png;base64,${(await canvasOf(aspect)).toString("base64")}` : undefined;
+    const lead = `OUTPUT SHAPE: ${ASPECT_WORDS[aspect]}${aspect === "1:1" ? "" : aspect === "16:9" ? " (wider than tall)" : " (taller than wide)"}.${strong ? ` This is essential: do not return a landscape or square image.${canvas ? ` @Image${refs.length + 1} is an empty canvas with exactly the output shape: fill it completely with the result (ignore its grey colour).` : ""}` : ""}`;
+    const res = await fetch(`${config.metaApiBase}/responses`, {
+      method: "POST", headers: { Authorization: `Bearer ${config.metaApiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: config.models.image, input: [{ role: "user", content: [...refs.map((r) => ({ type: "input_image", image_url: "url" in r ? r.url : r.dataUrl })), ...(canvas ? [{ type: "input_image", image_url: canvas }] : []), { type: "input_text", text: `${lead}\n${prompt}` }] }] }),
+      signal: AbortSignal.timeout(300_000),
+    });
+    if (!res.ok) throw new Error(`Muse Image ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const json = (await res.json()) as { output?: { type: string; result?: string }[]; usage?: { input_tokens?: number; output_tokens?: number }; error?: { message?: string } };
+    o.onCall?.({ model: config.models.image, ms: Date.now() - t0, inputTokens: json.usage?.input_tokens, outputTokens: json.usage?.output_tokens });
+    const img = json.output?.find((x) => x.type === "image_generation_call" && x.result)?.result;
+    if (!img) throw new Error(`Muse Image returned no image${json.error?.message ? `: ${json.error.message}` : ""}`);
+    return Buffer.from(img, "base64");
+  };
+  const first = await call(false);
+  const size = imageSize(first);
+  if (!size || Math.abs(size.w / size.h - want) / want < 0.15) return first;
+  return call(true).then((second) => { const s2 = imageSize(second); return s2 && Math.abs(s2.w / s2.h - want) < Math.abs(size.w / size.h - want) ? second : first; }).catch(() => first);
+}
+
+const canvasCache = new Map<Aspect, Promise<Buffer>>();
+function canvasOf(aspect: Aspect) {
+  const [w, h] = ({ "1:1": [512, 512], "4:5": [512, 640], "9:16": [504, 896], "16:9": [896, 504] } as const)[aspect];
+  if (!canvasCache.has(aspect)) canvasCache.set(aspect, import("./render.ts").then((r) => r.renderSvgToPng(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}"><rect width="${w}" height="${h}" fill="#bdbdbd"/></svg>`, w, h)));
+  return canvasCache.get(aspect)!;
+}
+
+/** Width and height of PNG, WebP or JPEG bytes (no decoding). */
+export function imageSize(b: Buffer): { w: number; h: number } | undefined {
+  try {
+    if (b.subarray(0, 4).toString("hex") === "89504e47") return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) };
+    if (b.subarray(0, 4).toString("ascii") === "RIFF") {
+      const kind = b.subarray(12, 16).toString("ascii");
+      if (kind === "VP8X") return { w: 1 + b.readUIntLE(24, 3), h: 1 + b.readUIntLE(27, 3) };
+      if (kind === "VP8 ") return { w: b.readUInt16LE(26) & 0x3fff, h: b.readUInt16LE(28) & 0x3fff };
+      if (kind === "VP8L") { const n = b.readUInt32LE(21); return { w: (n & 0x3fff) + 1, h: ((n >> 14) & 0x3fff) + 1 }; }
+    }
+    if (b.subarray(0, 3).toString("hex") === "ffd8ff") {
+      for (let i = 2; i < b.length - 9;) {
+        if (b[i] !== 0xff) return undefined;
+        const m = b[i + 1]!;
+        if (m >= 0xc0 && m <= 0xc3) return { w: b.readUInt16BE(i + 7), h: b.readUInt16BE(i + 5) };
+        i += 2 + b.readUInt16BE(i + 2);
+      }
+    }
+  } catch { /* unknown */ }
+  return undefined;
 }
 
 /** A tool the model can call during an agent loop. `run` returns what the model sees (plain text or JSON). */
