@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 import { z } from "zod";
-import { BriefSchema, DesignDocSchema, TEMPLATES } from "@keel/core";
+import { BriefSchema, DesignDocSchema, FORMATS, TEMPLATES } from "@keel/core";
 import { type createMarketing, type createRuntime } from "@keel/agents";
 import { schema } from "@keel/db";
 import { readMedia, saveMedia } from "@keel/meta";
@@ -15,7 +15,7 @@ const PatchDesign = z.object({ doc: DesignDocSchema.optional(), picked: z.boolea
 const UPLOAD_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
 
 /** Keel Studio API: make campaigns from a brief, edit the layered designs, launch paused with guardrails. */
-export function studioRoutes(rt: Runtime, { studio }: ReturnType<typeof createMarketing>) {
+export function studioRoutes(rt: Runtime, { studio, memory }: ReturnType<typeof createMarketing>) {
   const { db } = rt;
   const r = new Hono<AppEnv>();
 
@@ -111,6 +111,55 @@ export function studioRoutes(rt: Runtime, { studio }: ReturnType<typeof createMa
     } catch (err) {
       return c.json({ error: (err as Error).message }, 502);
     }
+  });
+
+  // ── Concept board ────────────────────────────────────────────────────────
+  r.post("/projects/:id/concepts", async (c) => {
+    const found = await projectFor(c.get("user").id, c.req.param("id"), true);
+    if (!found) return c.json({ error: "not found" }, 404);
+    if ((found.p.concepts as { status?: string } | null)?.status === "making") return c.json({ error: "the agent is already making concepts" }, 409);
+    const body = z.object({ count: z.number().int().min(1).max(16).optional(), formats: z.array(z.enum(FORMATS)).optional(), remixOf: z.string().optional() }).safeParse(await c.req.json().catch(() => ({})));
+    if (!body.success) return c.json({ error: body.error.message }, 400);
+    void studio.makeConcepts(found.p.id, body.data).catch(() => undefined);
+    return c.json({ ok: true }, 202);
+  });
+
+  r.post("/projects/:id/concepts/add", async (c) => {
+    const user = c.get("user");
+    const found = await projectFor(user.id, c.req.param("id"), true);
+    if (!found) return c.json({ error: "not found" }, 404);
+    if (found.p.status === "launched" && found.access.role !== "owner") return c.json({ error: "only owners can add ads to a live campaign" }, 403);
+    const ids = z.array(z.string()).min(1).max(16).safeParse(((await c.req.json().catch(() => ({}))) as { ids?: unknown }).ids);
+    if (!ids.success) return c.json({ error: "pick at least one concept" }, 400);
+    try {
+      return c.json({ added: await studio.addConcepts(found.p.id, ids.data, user.id) });
+    } catch (err) {
+      return c.json({ error: (err as Error).message }, 502);
+    }
+  });
+
+  // ── Brand memory: what has worked for this brand ─────────────────────────
+  r.get("/memory", async (c) => {
+    const access = await accessTo(db, c.get("user").id, c.req.query("accountId") ?? "");
+    if (!access) return c.json({ error: "not found" }, 404);
+    return c.json((await memory.get(access.brandId)) ?? null);
+  });
+  const refreshing = new Set<string>();
+  r.post("/memory/refresh", async (c) => {
+    const user = c.get("user");
+    const { accountId } = (await c.req.json().catch(() => ({}))) as { accountId?: string };
+    const access = await accessTo(db, user.id, accountId ?? "");
+    if (!access || access.role === "viewer") return c.json({ error: "not found" }, 404);
+    if (access.isDemo) return c.json({ error: "the demo workspace has no live ad account" }, 409);
+    if (!refreshing.has(access.brandId)) {
+      refreshing.add(access.brandId);
+      void memory.refresh(access.brandId, user.id).catch(() => undefined).finally(() => refreshing.delete(access.brandId));
+    }
+    return c.json({ ok: true }, 202);
+  });
+  r.get("/memory/status", async (c) => {
+    const access = await accessTo(db, c.get("user").id, c.req.query("accountId") ?? "");
+    return c.json({ refreshing: !!access && refreshing.has(access.brandId) });
   });
 
   r.post("/projects/:id/retry", async (c) => {

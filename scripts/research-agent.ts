@@ -12,7 +12,7 @@ const research = await gatherResearch({
   brand: "Test brand",
   brief: {
     productName: product, productUrl: "https://example.com", productPhotos: ["unused"], referenceImages: [], price: "", offer: "", audience: "",
-    countries: [process.env.RESEARCH_COUNTRY ?? "IN"], ageMin: 18, ageMax: 65, dailyBudget: 500, startDate: "", endDate: "", notes: "", competitors, competitorShots: [],
+    countries: [process.env.RESEARCH_COUNTRY ?? "IN"], ageMin: 18, ageMax: 65, dailyBudget: 500, startDate: "", endDate: "", notes: "", competitors, competitorShots: [], objective: "traffic",
   },
   log: async (text, kind = "info") => console.log(`${kind === "decision" ? "▸" : kind === "warn" ? "!" : " "} ${text}`),
 });

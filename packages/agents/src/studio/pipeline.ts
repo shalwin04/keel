@@ -6,6 +6,8 @@ import {
 } from "@keel/core";
 import { schema, type Db } from "@keel/db";
 import { type AdsGraphClient, inlineImageHref, readMedia, renderSvgToPng, saveMedia } from "@keel/meta";
+import { FORMAT_LABEL, FORMAT_SCENES, FORMATS, FormatCopySchema, type Concept, type FormatKey } from "@keel/core";
+import type { Memory } from "../memory.ts";
 import type { SceneRanking, StudioModels } from "./models.ts";
 import { gatherResearch } from "./research.ts";
 
@@ -20,7 +22,15 @@ const STEPS: Step[] = [
   { key: "storyboard", label: "Draw the Reel storyboard", status: "waiting" },
 ];
 export interface LogEntry { at: string; step: StepKey; text: string; kind: "info" | "decision" | "warn" }
-type DirRow = Direction & { sceneRef: string; sceneHistory: string[]; productInScene?: boolean; ranking?: SceneRanking; frames?: (string | null)[] };
+type DirRow = Direction & { sceneRef: string; sceneRef2?: string; sceneHistory: string[]; productInScene?: boolean; ranking?: SceneRanking; frames?: (string | null)[] };
+const hostOf = (u?: string) => { try { return new URL(u ?? "").host.replace(/^www\./, ""); } catch { return ""; } };
+/** Customer quotes that are reviews of this brand's own product (from its own site), the only ones a testimonial may use. */
+function ownQuotes(brief: Brief, research: Research | null) {
+  const own = hostOf(brief.productUrl);
+  return (research?.voice?.quotes ?? []).filter((q) => own && hostOf(q.url) === own);
+}
+
+export interface ConceptBoard { status: "making" | "ready" | "failed"; items: Concept[]; error?: string; at: string }
 
 /** The features Studio switches off on new creatives, plus any the rulebook locks. Meta's own defaults are never trusted. */
 export const STUDIO_LOCKED_FEATURES = [
@@ -39,6 +49,7 @@ export interface StudioDeps {
   models: StudioModels;
   audit(actor: string, event: string, payload: unknown): Promise<void>;
   adsFor(accountId: string): Promise<AdsGraphClient>;
+  memory?: Memory;
 }
 
 const imageInput = async (ref: string) => ({ dataUrl: await inlineImageHref(ref) });
@@ -130,8 +141,8 @@ export function createStudio(d: StudioDeps) {
     return saveMedia(png, ".png", "studio");
   }
 
-  function composeInput(brief: Brief, brand: string, direction: Direction, sceneRef: string, productInScene = false) {
-    return { sceneRef, productRef: brief.productPhotos[0]!, brand, direction, price: brief.price || undefined, offer: brief.offer || undefined, productInScene, logoRef: brief.logoRef };
+  function composeInput(brief: Brief, brand: string, direction: Direction, sceneRef: string, productInScene = false, sceneRef2?: string) {
+    return { sceneRef, sceneRef2, productRef: brief.productPhotos[0]!, brand, direction, price: brief.price || undefined, offer: brief.offer || undefined, productInScene, logoRef: brief.logoRef };
   }
 
   /**
@@ -152,7 +163,9 @@ export function createStudio(d: StudioDeps) {
       });
 
       const directions = await timed(projectId, "strategy", async () => {
-        const ds = (await d.models.planDirections(brief, brand, product, rulebook, research.ads.length ? research.insights : undefined)).slice(0, 3);
+        const memory = (await d.memory?.get(p.brandId))?.summary ?? undefined;
+        if (memory?.winners.length) await log(projectId, "strategy", `Using what's worked for ${brand} before: ${memory.winners[0]}`, "decision");
+        const ds = (await d.models.planDirections(brief, brand, product, rulebook, research.ads.length ? research.insights : undefined, { voice: research.voice, memory })).slice(0, 3);
         if (!ds.length) throw new Error("no directions came back");
         for (const x of ds) await log(projectId, "strategy", `${x.title}: ${x.rationale || x.angle}`, "decision");
         return { value: ds, detail: ds.map((x) => x.title).join(" · ") };
@@ -303,11 +316,16 @@ export function createStudio(d: StudioDeps) {
       if (!page) throw new Error("This ad account has no Facebook Page it can advertise as. Connect a Page in Business settings.");
       const account = await ads.getAccount(p.accountId);
       const minor = ["JPY", "KRW", "VND", "CLP", "ISK", "HUF", "TWD", "IDR"].includes(account.currency ?? "") ? 1 : 100;
-      const campaign = await ads.createCampaign(p.accountId, `${p.name} · Keel Studio`);
+      let pixelId: string | undefined;
+      if (brief.objective === "sales") {
+        pixelId = (await ads.pixels(p.accountId).catch(() => []))[0]?.id;
+        if (!pixelId) throw new Error("A sales campaign needs a Meta Pixel on this ad account. Add one in Events Manager, or choose website visits.");
+      }
+      const campaign = await ads.createCampaign(p.accountId, `${p.name} · Keel Studio`, brief.objective);
       const adset = await ads.createAdSet(p.accountId, {
         campaignId: campaign.id, name: `${p.name} · ${brief.countries.join(", ")} ${brief.ageMin}-${brief.ageMax}`,
         dailyBudgetMinor: brief.dailyBudget * minor, countries: brief.countries, ageMin: brief.ageMin, ageMax: brief.ageMax,
-        start: new Date(brief.startDate).toISOString(), end: new Date(brief.endDate).toISOString(),
+        start: new Date(brief.startDate).toISOString(), end: new Date(brief.endDate).toISOString(), pixelId,
       });
       const made: LaunchedAd[] = [];
       for (const dirIdx of perDirection) {
@@ -405,6 +423,133 @@ export function createStudio(d: StudioDeps) {
     return projects.map((p) => ({ ...p, covers: covers.filter((c) => c.projectId === p.id).sort((a, b) => a.direction - b.direction).map((c) => c.renderRef) }));
   }
 
-  return { create, run, list, regenerateScene, useScene, saveDesign, changeTemplate, launch, renderDesign, drawStoryboard, addDirection, extendLaunch };
+  // ── Concept board ────────────────────────────────────────────────────────
+
+  async function setBoard(projectId: string, fn: (b: ConceptBoard) => ConceptBoard) {
+    const [p] = await db.select({ concepts: schema.studioProjects.concepts }).from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    const cur = (p?.concepts as ConceptBoard | null) ?? { status: "ready", items: [], at: new Date().toISOString() };
+    const next = fn(cur);
+    await db.update(schema.studioProjects).set({ concepts: next, updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
+    return next;
+  }
+
+  /** Keeps concepts honest: real quotes only, offers only if the brief has one, no named competitors in comparisons. */
+  function vet(c: Direction, brief: Brief, research: Research | null): Direction & { format: FormatKey } {
+    const copy = FormatCopySchema.parse(c.copy ?? {});
+    let format = (FORMATS as readonly string[]).includes(c.format ?? "") ? (c.format as FormatKey) : "classic";
+    const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9 ]+/g, "").replace(/\s+/g, " ").trim();
+    if (format === "testimonial") {
+      // A testimonial must be a real review of THIS product: quotes about competitors or the category are never ours to show.
+      const real = ownQuotes(brief, research).find((q) => copy.quote.length >= 20 && (norm(q.text).includes(norm(copy.quote)) || norm(copy.quote).includes(norm(q.text))));
+      if (real) copy.author = copy.author || real.source;
+      else { format = "tweet"; copy.quote = c.primaryText; copy.author = ""; }
+    }
+    if (format === "offer" && !brief.offer) format = "classic";
+    if (format === "versus") {
+      const names = [...(research?.competitors ?? []), ...brief.competitors].map(norm).filter((n) => n.length > 2);
+      if (!copy.them || names.some((n) => norm(copy.them).includes(n))) copy.them = "Others";
+      if (!copy.rows.length) format = "notes";
+    }
+    if (format === "notes" && !copy.lines.length) copy.lines = [c.subline, c.hook].filter(Boolean);
+    return { ...c, format, copy };
+  }
+
+  async function renderConcept(c: Direction & { format: FormatKey }, brief: Brief, brand: string, product: { dataUrl: string }[]) {
+    const n = FORMAT_SCENES[c.format];
+    let sceneRef = brief.productPhotos[0]!, sceneRef2: string | undefined, productInScene = false;
+    if (n >= 1) {
+      const withProduct = c.format !== "meme";
+      const shot = await d.models.generateScene(c, brief, withProduct ? product : [], 0);
+      sceneRef = await saveMedia(shot.bytes, ".png", "scenes");
+      productInScene = shot.productInScene;
+    }
+    if (n >= 2) sceneRef2 = await saveMedia((await d.models.generateScene({ ...c, scenePrompt: c.copy?.scene2 || c.scenePrompt }, brief, [], 1)).bytes, ".png", "scenes");
+    const doc = compose({ ...composeInput(brief, brand, c, sceneRef, productInScene, sceneRef2), template: "hero", size: "square" });
+    const renderRef = await renderDesign(doc);
+    const score = await d.models.scoreConcept(await imageInput(renderRef), product[0]!, c).catch(() => undefined);
+    return { sceneRef, sceneRef2, productInScene, renderRef, score };
+  }
+
+  /**
+   * The concept board: Muse Wonder writes many ideas across formats (from research, customer voice and brand memory), each is rendered
+   * and Muse Spark scores it as a pre-flight check. The best three are recommended; a person picks what goes into the campaign.
+   * With `remixOf`, Wonder rebuilds the structure of one long-running competitor ad for this brand instead.
+   */
+  async function makeConcepts(projectId: string, o: { count?: number; formats?: FormatKey[]; remixOf?: string } = {}) {
+    const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    if (!p) throw new Error("not found");
+    const brief = BriefSchema.parse(p.brief);
+    const { name: brand, rulebook } = await brandContext(p.brandId, brief);
+    const research = p.research as Research | null;
+    const product = await Promise.all(brief.productPhotos.slice(0, 2).map(imageInput));
+    const count = Math.max(1, Math.min(16, o.count ?? Number(process.env.STUDIO_CONCEPTS ?? 12)));
+    const formats = (o.formats?.length ? o.formats : FORMATS.filter((f) => (f !== "offer" || brief.offer) && (f !== "testimonial" || ownQuotes(brief, research).length > 0))) as FormatKey[];
+    const remixAd = o.remixOf ? research?.ads.find((a) => a.id === o.remixOf) : undefined;
+    if (o.remixOf && !remixAd) throw new Error("that competitor ad isn't in this campaign's research");
+    await setBoard(projectId, (b) => ({ ...b, status: "making", error: undefined, at: new Date().toISOString() }));
+    try {
+      const memory = (await d.memory?.get(p.brandId))?.summary ?? undefined;
+      await log(projectId, "compose", remixAd ? `Remixing the structure of ${remixAd.pageName}'s ad for ${brand}` : `Writing ${count} concepts across ${formats.length} formats`, "decision");
+      const voice = research?.voice ? { ...research.voice, quotes: ownQuotes(brief, research) } : undefined;
+      const planned = (await d.models.planConcepts({ brief, brand, product, insights: research?.insights, voice, memory, rulebook, count: remixAd ? 1 : count, formats,
+        remix: remixAd ? { image: remixAd.snapshotRef ? await imageInput(remixAd.snapshotRef) : undefined, analysis: remixAd.analysis, pageName: remixAd.pageName } : undefined })).slice(0, remixAd ? 1 : count);
+      const made: Concept[] = [];
+      const queue = planned.map((c) => vet(c, brief, research));
+      let next = 0;
+      await Promise.all(Array.from({ length: 3 }, async () => {
+        while (next < queue.length) {
+          const c = queue[next++]!;
+          try {
+            const r = await renderConcept(c, brief, brand, product);
+            made.push({ ...c, ...r, id: randomUUID(), createdAt: new Date().toISOString(), ...(remixAd ? { remixOf: { adId: remixAd.id, pageName: remixAd.pageName } } : {}) });
+          } catch (err) {
+            await log(projectId, "compose", `${c.title}: couldn't render (${(err as Error).message.slice(0, 80)})`, "warn");
+          }
+        }
+      }));
+      const board = await setBoard(projectId, (b) => {
+        const items = [...b.items, ...made].sort((x, y) => (y.score?.overall ?? 0) - (x.score?.overall ?? 0)).map((x, k) => ({ ...x, recommended: k < 3 && x.addedAs === undefined }));
+        return { status: "ready", items, at: new Date().toISOString() };
+      });
+      const top = board.items.filter((x) => x.recommended);
+      await log(projectId, "check", `Muse Spark pre-scored ${made.length} concepts. Strongest: ${top.map((x) => `${x.title} (${FORMAT_LABEL[x.format]}, ${Math.round((x.score?.overall ?? 0) * 100)})`).join(", ")}`, "decision");
+      return made.length;
+    } catch (err) {
+      await setBoard(projectId, (b) => ({ ...b, status: "failed", error: (err as Error).message.slice(0, 300), at: new Date().toISOString() }));
+      throw err;
+    }
+  }
+
+  /** Turns picked concepts into campaign directions (every size laid out, picked for launch). If the campaign is live, adds them as ads. */
+  async function addConcepts(projectId: string, conceptIds: string[], userId: string) {
+    const [p] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+    if (!p) throw new Error("not found");
+    const brief = BriefSchema.parse(p.brief);
+    const { name: brand } = await brandContext(p.brandId, brief);
+    const board = (p.concepts as ConceptBoard | null) ?? { status: "ready", items: [], at: "" };
+    const picks = board.items.filter((c) => conceptIds.includes(c.id) && c.addedAs === undefined);
+    const rows = (p.directions ?? []) as DirRow[];
+    const added: { id: string; index: number }[] = [];
+    for (const c of picks) {
+      const index = rows.length;
+      const { id: _id, renderRef: _r, score: _s, recommended: _rec, addedAs: _a, remixOf: _rm, createdAt: _c, sceneRef, sceneRef2, productInScene, ...dir } = c;
+      const row: DirRow = { ...dir, sceneRef: sceneRef ?? brief.productPhotos[0]!, sceneRef2, productInScene, sceneHistory: sceneRef ? [sceneRef] : [] };
+      rows.push(row);
+      for (const size of Object.keys(SIZES) as SizeKey[]) {
+        const doc = compose({ ...composeInput(brief, brand, row, row.sceneRef, row.productInScene, row.sceneRef2), template: "hero", size });
+        await db.insert(schema.studioDesigns).values({ id: randomUUID(), projectId, direction: index, size, doc, renderRef: await renderDesign(doc), picked: true, check: c.score ? { pass: c.score.overall >= 0.5, score: c.score.overall, issues: c.score.notes ? [c.score.notes] : [] } : null });
+      }
+      added.push({ id: c.id, index });
+    }
+    await db.update(schema.studioProjects).set({ directions: rows, updatedAt: new Date() }).where(eq(schema.studioProjects.id, projectId));
+    await setBoard(projectId, (b) => ({ ...b, items: b.items.map((x) => { const a = added.find((y) => y.id === x.id); return a ? { ...x, addedAs: a.index, recommended: false } : x; }) }));
+    await d.audit(userId, "studio.concepts_added", { projectId, concepts: added.length });
+    if (p.launch && p.status === "launched") {
+      for (const a of added) await extendLaunch(projectId, a.index, userId, !!(p.launch as LaunchInfo).active);
+    }
+    return added;
+  }
+
+  return { create, run, list, regenerateScene, useScene, saveDesign, changeTemplate, launch, renderDesign, drawStoryboard, addDirection, extendLaunch, makeConcepts, addConcepts };
 }
 export type Studio = ReturnType<typeof createStudio>;

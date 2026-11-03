@@ -26,6 +26,15 @@ describe("planMoves", () => {
   });
 });
 
+describe("planMoves on a sales campaign", () => {
+  const sale = (direction: number, spend: number, purchases: number, roas: number) => ({ ...ad(direction, 4000, 1.5), spend, purchases, cpa: purchases ? spend / purchases : 0, roas });
+  it("judges on cost per purchase once there are enough sales", () => {
+    const moves = planMoves({ perf: snap([sale(0, 2000, 10, 3), sale(1, 2000, 2, 0.6), sale(2, 1500, 6, 2)]), learning: { ...learning, nextIdea: null }, settings, launch, existing: [], directions: 3 });
+    expect(moves.map((m) => [m.kind, m.params.direction])).toEqual([["pause_ad", 1], ["scale_budget", undefined]]);
+    expect(moves[0]!.why).toContain("per purchase");
+  });
+});
+
 describe("formatPrice", () => {
   it("formats store prices in the shop's currency", () => {
     expect(formatPrice("3499.00", "INR", "IN")).toBe("₹3,499");

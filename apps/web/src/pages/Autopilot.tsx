@@ -277,7 +277,7 @@ function Performance({ a }: { a: AutopilotDetail }) {
             </div>
             <div className="mt-5 overflow-x-auto scroll-thin">
               <table className="w-full min-w-[560px] text-[14px]">
-                <thead><tr className="text-left text-[12px] text-ink-2"><th className="pb-2 font-medium">Direction</th><th className="pb-2 font-medium">CTR</th><th className="pb-2 text-right font-medium">Impr.</th><th className="pb-2 text-right font-medium">Clicks</th><th className="pb-2 text-right font-medium">CPC</th><th className="pb-2 text-right font-medium">Spent</th></tr></thead>
+                <thead><tr className="text-left text-[12px] text-ink-2"><th className="pb-2 font-medium">Direction</th><th className="pb-2 font-medium">CTR</th><th className="pb-2 text-right font-medium">Impr.</th><th className="pb-2 text-right font-medium">Clicks</th><th className="pb-2 text-right font-medium">CPC</th><th className="pb-2 text-right font-medium">Spent</th>{last.ads.some((x) => x.purchases) && <><th className="pb-2 text-right font-medium">Sales</th><th className="pb-2 text-right font-medium">Cost/sale</th><th className="pb-2 text-right font-medium">ROAS</th></>}</tr></thead>
                 <tbody>
                   {[...last.ads].sort((x, y) => y.ctr - x.ctr).map((ad) => {
                     const best = Math.max(...last.ads.map((x) => x.ctr), 0.01);
@@ -290,6 +290,11 @@ function Performance({ a }: { a: AutopilotDetail }) {
                         <td className="py-2.5 text-right tabular-nums">{ad.clicks.toLocaleString()}</td>
                         <td className="py-2.5 text-right tabular-nums">{ad.cpc ? money(ad.cpc, last.currency) : "–"}</td>
                         <td className="py-2.5 text-right tabular-nums">{money(ad.spend, last.currency)}</td>
+                        {last.ads.some((x) => x.purchases) && <>
+                          <td className="py-2.5 text-right tabular-nums">{ad.purchases ?? 0}</td>
+                          <td className="py-2.5 text-right tabular-nums">{ad.cpa ? money(ad.cpa, last.currency) : "–"}</td>
+                          <td className="py-2.5 text-right tabular-nums">{ad.roas ? `${ad.roas.toFixed(1)}x` : "–"}</td>
+                        </>}
                       </tr>
                     );
                   })}

@@ -1,7 +1,8 @@
 import type { Brief, CompetitorAd, Research } from "@keel/core";
 import {
   AD_LIBRARY_EU, AdLibraryAccessError, captureUrl, config, crawlSite, inlineImageHref, libraryUrl, renderSvgToPng, saveMedia, searchAdLibrary,
-  type AgentTool, type LibraryAd,
+  groundedSearch, readRedditThread, readReviews, searchReddit,
+  type AgentTool, type CustomerQuote, type LibraryAd,
 } from "@keel/meta";
 import type { StudioModels } from "./models.ts";
 
@@ -30,11 +31,17 @@ Tools:
 - look_at_ad: view one ad from your search results (a vision model reads the screenshot).
 - read_website: open any public web page (a competitor's homepage, a sale, collection or bestseller page, a product page). You get the hero message,
   offers, prices, a visual read of the page, and links you can follow.
+- web_search: search the web (Muse search grounding) to find competitors, review pages, articles and threads. May be unavailable.
+- read_reviews: read customer reviews on a page: our own product page, an Amazon or Flipkart listing, a Trustpilot page (trustpilot.com/review/<domain>).
+- search_reddit / read_reddit_thread: what real people ask and complain about in this category.
+
+Two jobs. (1) Competitors: how they advertise and position. (2) Customers: what buyers of this kind of product actually say: their pains, the
+moment they need it, objections, and the exact words they use. Start with our own product page's reviews, then marketplaces and Reddit.
 
 Work like a strategist: decide which competitors matter in this market (always include the ones the brief names), read their sites, follow the links
 that reveal positioning and offers (sales, bestsellers, the product most like ours), and look at their longest-running ads. Call several tools at once
 when they're independent. Use only website addresses you are confident exist, for the right market (for India, e.g. decathlon.in).
-Aim for 4-6 competitors; you have ${steps} rounds. Finish with a short plain-text note: what competitors do, what's overused, and where the opening is.`;
+Aim for 4-6 competitors and 30+ customer comments; you have ${steps} rounds. Finish with a short plain-text note: what competitors do, what's overused, and where the opening is.`;
 
 type Log = (text: string, kind?: "info" | "decision" | "warn") => Promise<void>;
 
@@ -50,6 +57,9 @@ export async function gatherResearch(o: { models: StudioModels; brief: Brief; br
   const looked = new Map<string, CompetitorAd>();
   const pages = new Map<string, CompetitorAd>();
   const searches: string[] = [];
+  const quotes: CustomerQuote[] = [];
+  const addQuotes = (qs: CustomerQuote[]) => { for (const q of qs) if (!quotes.some((x) => x.text === q.text)) quotes.push(q); };
+  let searchDown = false;
   let libraryNote: string | undefined;
 
   // ── tools ────────────────────────────────────────────────────────────────
@@ -117,7 +127,54 @@ export async function gatherResearch(o: { models: StudioModels; brief: Brief; br
     };
   }
 
+  async function webSearch(query: string) {
+    if (searchDown) return { unavailable: "web search isn't available; use read_website with addresses you know" };
+    if (fake) { searchDown = true; return { unavailable: "web search isn't available in test mode" }; }
+    try {
+      const r = await groundedSearch(query);
+      await log(`Searched the web: "${query}" (${r.sources.length} sources)`);
+      return r;
+    } catch (err) {
+      searchDown = true;
+      await log(`Web search unavailable (${(err as Error).message.slice(0, 100)})`, "warn");
+      return { unavailable: "web search isn't available; use read_website with addresses you know" };
+    }
+  }
+  async function reviews(url: string) {
+    if (pages.size >= MAX_PAGES + 4) return { error: "page budget used; finish with what you have" };
+    const r = await readReviews(/^https?:\/\//i.test(url) ? url : `https://${url}`);
+    addQuotes(r.quotes);
+    await log(`Read ${r.quotes.length} reviews on ${host(r.url)}`);
+    return { url: r.url, title: r.title, count: r.quotes.length, reviews: r.quotes.slice(0, 25).map((q) => ({ text: q.text.slice(0, 300), rating: q.rating })) };
+  }
+  async function reddit(query: string) {
+    if (fake) {
+      const qs = [`Every raincoat I buy is either sweaty or soaked through by the time I reach office. Anyone found one that works for the train?`, `I just want something light that fits in my bag. Umbrellas are useless in Mumbai wind.`].map((text) => ({ text, source: "r/mumbai", url: "https://www.reddit.com/r/mumbai/" }));
+      addQuotes(qs);
+      await log(`Reddit "${query}": 1 thread`);
+      return { threads: [{ title: "Best rain jacket for commuting?", sub: "mumbai", url: "https://www.reddit.com/r/mumbai/comments/x/", text: qs[0]!.text }] };
+    }
+    const threads = await searchReddit(query);
+    for (const t of threads) if (t.text.length > 25) addQuotes([{ text: t.text, source: `r/${t.sub}`, url: t.url }]);
+    await log(`Reddit "${query}": ${threads.length} threads`);
+    return { threads };
+  }
+  async function thread(url: string) {
+    const qs = await readRedditThread(url);
+    addQuotes(qs);
+    await log(`Read a Reddit thread (${qs.length} comments)`);
+    return { comments: qs.map((q) => q.text.slice(0, 400)) };
+  }
+
   const tools: AgentTool[] = [
+    { name: "web_search", description: "Search the web. Returns a short answer and the pages cited.",
+      parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }, run: async (a) => JSON.stringify(await webSearch(String(a.query ?? ""))) },
+    { name: "read_reviews", description: "Read customer reviews on a page (product page, Amazon/Flipkart listing, trustpilot.com/review/<domain>).",
+      parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, run: async (a) => JSON.stringify(await reviews(String(a.url ?? ""))) },
+    { name: "search_reddit", description: "Search Reddit posts about a topic (questions, complaints, recommendations).",
+      parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] }, run: async (a) => JSON.stringify(await reddit(String(a.query ?? ""))) },
+    { name: "read_reddit_thread", description: "Read a Reddit thread's top comments (use a url from search_reddit).",
+      parameters: { type: "object", properties: { url: { type: "string" } }, required: ["url"] }, run: async (a) => JSON.stringify(await thread(String(a.url ?? ""))) },
     { name: "search_ad_library", description: "Search Meta's Ad Library for ads by keyword or advertiser name. Returns ads with how long each has run.",
       parameters: { type: "object", properties: { terms: { type: "string", description: "keyword or brand" }, countries: { type: "array", items: { type: "string" }, description: "ISO country codes; defaults to the campaign's market" } }, required: ["terms"] },
       run: async (a) => JSON.stringify(await search(String(a.terms ?? ""), Array.isArray(a.countries) ? a.countries.map(String) : undefined)) },
@@ -156,17 +213,27 @@ export async function gatherResearch(o: { models: StudioModels; brief: Brief; br
     ad.analysis = await models.analyzeAd({ image: { dataUrl: await inlineImageHref(ad.snapshotRef!) }, pageName: ad.pageName }).catch(() => undefined);
   });
 
+  // Our own product page usually has the most honest reviews; read it if the agent didn't.
+  if (!fake && !quotes.some((q) => q.url && host(q.url).startsWith(host(brief.productUrl).split("/")[0]!))) await reviews(brief.productUrl).catch(() => undefined);
+  let voice: Research["voice"];
+  if (quotes.length >= 3) {
+    try {
+      voice = { ...(await models.voiceOfCustomer({ brief, brand: o.brand, quotes })), quotes: quotes.slice(0, 60) };
+      await log(`Customers: ${voice.personas.map((p) => p.name).join(", ") || "no clear personas"} · ${quotes.length} comments read`, "decision");
+    } catch (err) { await log(`Couldn't summarise customer comments (${(err as Error).message.slice(0, 80)})`, "warn"); }
+  }
+
   const ads = [...[...looked.values()].sort((a, b) => (b.daysRunning ?? 0) - (a.daysRunning ?? 0)), ...pages.values(), ...uploads];
   const competitors = [...new Set(ads.filter((a) => a.source !== "upload").map((a) => a.pageName))];
   const n = (k: number, one: string) => `${k} ${one}${k === 1 ? "" : "s"}`;
   await log(`Studied ${n(looked.size, "ad")} and ${n(pages.size, "web page")}${uploads.length ? ` plus ${uploads.length} uploaded` : ""}`, "decision");
   if (!ads.some((a) => a.analysis)) {
     await log("No competitor material to study, so the plan comes from the brief alone", "warn");
-    return { searchTerms: searches, competitors, source: "none", note: libraryNote, ads, insights: { summary: notes || "No competitor ads or sites were available, so the directions come from the brief and rulebook alone.", patterns: [], saturated: [], whiteSpace: [], recommendations: [] } };
+    return { searchTerms: searches, competitors, source: "none", note: libraryNote, ads, voice, insights: { summary: notes || "No competitor ads or sites were available, so the directions come from the brief and rulebook alone.", patterns: [], saturated: [], whiteSpace: [], recommendations: [] } };
   }
-  const insights = await models.synthesize(brief, o.brand, ads.filter((a) => a.analysis), notes);
+  const insights = await models.synthesize(brief, o.brand, ads.filter((a) => a.analysis), [notes, voice && `Customers: ${voice.summary}`].filter(Boolean).join("\n"));
   for (const w of insights.whiteSpace.slice(0, 2)) await log(`Opening: ${w}`, "decision");
   const kinds = new Set(ads.map((a) => a.source));
   const source = kinds.size > 1 ? "mixed" : kinds.has("ad_library") ? "ad_library" : kinds.has("site") ? "sites" : "uploads";
-  return { searchTerms: searches, competitors, source, note: libraryNote, ads, insights };
+  return { searchTerms: searches, competitors, source, note: libraryNote, ads, insights, voice };
 }

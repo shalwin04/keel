@@ -37,6 +37,12 @@ npm run build          # web app → apps/web/dist (served by the API in product
 
 read site (`packages/meta/src/site.ts`: Playwright crawl, JSON-LD/Shopify products, logo, colours) → brand profile (Wonder) → brief → Studio run (research → strategy → art-directed scenes → layouts → checks → storyboard) → **launch on approval** (paused or on) → worker `autopilot.check()` every `AUTOPILOT_CHECK_HOURS`: insights → learnings (Wonder) → `planMoves()` (deterministic thresholds) → moves wait for approval (go live, pause ad, raise budget ≤ cap, new variant of the winner). Code: `packages/agents/src/autopilot.ts`, `apps/api/src/autopilot.ts`, `apps/web/src/pages/Autopilot.tsx`.
 
+## Research, concepts and memory
+
+- Research agent (`packages/agents/src/studio/research.ts`): Muse Wonder tool loop over Ad Library, competitor websites, web search (search grounding), reviews and Reddit → competitor insights + **voice of the customer** (personas, verbatim phrases).
+- Concept board (`makeConcepts`/`addConcepts` in `pipeline.ts`): Wonder writes many concepts across `FORMATS` (core `composeFormat`), Spark pre-scores each render. `vet()` keeps them honest: testimonials only quote reviews of the brand's own product, offers only if the brief has one, comparisons never name a competitor.
+- Brand memory (`packages/agents/src/memory.ts`): Spark reads the account's past ads with results, Wonder finds what wins; Autopilot learnings are added. Studio strategy and concepts read it.
+
 ## Watch cycle
 
 ingest → detectDrift → screen → (inspect → investigate) → decide → (notify → requestApproval) → act → verify → learn

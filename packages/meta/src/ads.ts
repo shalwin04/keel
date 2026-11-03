@@ -248,16 +248,17 @@ export class AdsGraphClient {
     throw new GraphError(path, "could not satisfy Meta's required fields");
   }
 
-  createCampaign(accountId: string, name: string) {
+  createCampaign(accountId: string, name: string, objective: "traffic" | "sales" = "traffic") {
     return this.postTolerant<{ id: string }>(`${accountId}/campaigns`, {
-      name, objective: "OUTCOME_TRAFFIC", status: "PAUSED", special_ad_categories: [], is_adset_budget_sharing_enabled: false, buying_type: "AUCTION",
+      name, objective: objective === "sales" ? "OUTCOME_SALES" : "OUTCOME_TRAFFIC", status: "PAUSED", special_ad_categories: [], is_adset_budget_sharing_enabled: false, buying_type: "AUCTION",
     }, ["is_adset_budget_sharing_enabled", "buying_type"]);
   }
 
-  createAdSet(accountId: string, o: { campaignId: string; name: string; dailyBudgetMinor: number; countries: string[]; ageMin: number; ageMax: number; start: string; end: string }) {
+  createAdSet(accountId: string, o: { campaignId: string; name: string; dailyBudgetMinor: number; countries: string[]; ageMin: number; ageMax: number; start: string; end: string; pixelId?: string }) {
     return this.postTolerant<{ id: string }>(`${accountId}/adsets`, {
       name: o.name, campaign_id: o.campaignId, status: "PAUSED",
-      daily_budget: Math.round(o.dailyBudgetMinor), billing_event: "IMPRESSIONS", optimization_goal: "LINK_CLICKS",
+      daily_budget: Math.round(o.dailyBudgetMinor), billing_event: "IMPRESSIONS", optimization_goal: o.pixelId ? "OFFSITE_CONVERSIONS" : "LINK_CLICKS",
+      ...(o.pixelId ? { promoted_object: { pixel_id: o.pixelId, custom_event_type: "PURCHASE" } } : {}),
       bid_strategy: "LOWEST_COST_WITHOUT_CAP", destination_type: "WEBSITE",
       targeting: { geo_locations: { countries: o.countries }, age_min: o.ageMin, age_max: o.ageMax, targeting_automation: { advantage_audience: 0 } },
       start_time: o.start, end_time: o.end,
@@ -288,19 +289,53 @@ export class AdsGraphClient {
   /** Lifetime results per ad (impressions, clicks, CTR, CPC, spend, reach, frequency). */
   async adInsights(accountId: string, adIds: string[]) {
     if (!adIds.length) return [];
-    const res = await this.req<{ data: { ad_id: string; impressions?: string; reach?: string; clicks?: string; inline_link_clicks?: string; ctr?: string; inline_link_click_ctr?: string; cpc?: string; cost_per_inline_link_click?: string; spend?: string; frequency?: string }[] }>(`${accountId}/insights`, {
-      params: { level: "ad", date_preset: "maximum", fields: "ad_id,impressions,reach,clicks,inline_link_clicks,ctr,inline_link_click_ctr,cpc,cost_per_inline_link_click,spend,frequency", filtering: [{ field: "ad.id", operator: "IN", value: adIds }], limit: "200" },
+    const res = await this.req<{ data: InsightRow[] }>(`${accountId}/insights`, {
+      params: { level: "ad", date_preset: "maximum", fields: INSIGHT_FIELDS, filtering: [{ field: "ad.id", operator: "IN", value: adIds }], limit: "200" },
     });
-    const n = (v?: string) => (v === undefined ? 0 : Number(v) || 0);
-    return res.data.map((r) => ({
-      adId: r.ad_id, impressions: n(r.impressions), reach: n(r.reach), clicks: n(r.inline_link_clicks ?? r.clicks),
-      ctr: n(r.inline_link_click_ctr ?? r.ctr), cpc: n(r.cost_per_inline_link_click ?? r.cpc), spend: n(r.spend), frequency: n(r.frequency),
-    }));
+    return res.data.map(parseInsight);
+  }
+
+  /** The account's ads with the most delivery (lifetime), for learning what has worked for this brand. */
+  async topAds(accountId: string, limit = 25) {
+    const res = await this.req<{ data: (InsightRow & { ad_name?: string })[] }>(`${accountId}/insights`, {
+      params: { level: "ad", date_preset: "maximum", fields: `ad_name,${INSIGHT_FIELDS}`, sort: "impressions_descending", limit: String(limit) },
+    });
+    return res.data.map((r) => ({ ...parseInsight(r), adName: r.ad_name ?? r.ad_id }));
+  }
+
+  /** An ad's creative: its image (large), copy and headline. */
+  async adCreative(adId: string) {
+    const r = await this.req<{ creative?: { id: string; image_url?: string; thumbnail_url?: string; body?: string; title?: string; object_story_spec?: Record<string, unknown>; asset_feed_spec?: Record<string, unknown> } }>(adId, {
+      params: { fields: "creative{id,image_url,thumbnail_url,body,title,object_story_spec,asset_feed_spec}", thumbnail_width: "1080", thumbnail_height: "1080" },
+    });
+    const c = r.creative;
+    const feed = c?.asset_feed_spec as { bodies?: { text: string }[]; titles?: { text: string }[] } | undefined;
+    return { image: c?.image_url ?? c?.thumbnail_url, body: c?.body ?? feed?.bodies?.[0]?.text, title: c?.title ?? feed?.titles?.[0]?.text };
+  }
+
+  async pixels(accountId: string) {
+    const r = await this.req<{ data: { id: string; name: string }[] }>(`${accountId}/adspixels`, { params: { fields: "id,name", limit: "25" } });
+    return r.data;
   }
 
   swapCreative(adId: string, creativeId: string) {
     return this.req<{ success: boolean }>(adId, { method: "POST", params: { creative: { creative_id: creativeId } } });
   }
+}
+
+type InsightRow = { ad_id: string; impressions?: string; reach?: string; clicks?: string; inline_link_clicks?: string; ctr?: string; inline_link_click_ctr?: string; cpc?: string; cost_per_inline_link_click?: string; spend?: string; frequency?: string;
+  actions?: { action_type: string; value: string }[]; purchase_roas?: { action_type: string; value: string }[] };
+const INSIGHT_FIELDS = "ad_id,impressions,reach,clicks,inline_link_clicks,ctr,inline_link_click_ctr,cpc,cost_per_inline_link_click,spend,frequency,actions,purchase_roas";
+const PURCHASE = ["omni_purchase", "purchase", "offsite_conversion.fb_pixel_purchase"];
+function parseInsight(r: InsightRow) {
+  const n = (v?: string) => (v === undefined ? 0 : Number(v) || 0);
+  const purchases = n(PURCHASE.map((t) => r.actions?.find((a) => a.action_type === t)?.value).find((v) => v !== undefined));
+  const spend = n(r.spend);
+  return {
+    adId: r.ad_id, impressions: n(r.impressions), reach: n(r.reach), clicks: n(r.inline_link_clicks ?? r.clicks),
+    ctr: n(r.inline_link_click_ctr ?? r.ctr), cpc: n(r.cost_per_inline_link_click ?? r.cpc), spend, frequency: n(r.frequency),
+    purchases, cpa: purchases ? spend / purchases : 0, roas: n(r.purchase_roas?.[0]?.value),
+  };
 }
 
 export function featuresOf(c: Creative): FeaturesSpec {

@@ -135,6 +135,29 @@ export async function runTools(o: {
   return (await ask(false))?.content ?? "";
 }
 
+/**
+ * Web search through Muse Wonder's search grounding (Responses API with the web search tool). Returns the model's answer and the
+ * pages it cited. The tool type can be overridden with META_SEARCH_TOOL if Meta names it differently.
+ */
+export async function groundedSearch(query: string, o: { onCall?: (i: ModelCallInfo) => void } = {}): Promise<{ answer: string; sources: { url: string; title: string }[] }> {
+  const t0 = Date.now();
+  const res = await fetch(`${config.metaApiBase}/responses`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${config.metaApiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ model: config.models.wonder, tools: [{ type: process.env.META_SEARCH_TOOL ?? "web_search" }], input: `Search the web and answer briefly, citing pages: ${query}` }),
+    signal: AbortSignal.timeout(90_000),
+  });
+  if (!res.ok) throw new Error(`search grounding ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  type Ann = { type?: string; url?: string; title?: string };
+  const j = (await res.json()) as { output_text?: string; output?: { type: string; content?: { type: string; text?: string; annotations?: Ann[] }[] }[]; usage?: { input_tokens?: number; output_tokens?: number } };
+  o.onCall?.({ model: config.models.wonder, ms: Date.now() - t0, inputTokens: j.usage?.input_tokens, outputTokens: j.usage?.output_tokens });
+  const parts = (j.output ?? []).flatMap((x) => x.content ?? []).filter((c) => c.type === "output_text" || c.text);
+  const answer = j.output_text ?? parts.map((c) => c.text ?? "").join("\n");
+  const seen = new Set<string>();
+  const sources = parts.flatMap((c) => c.annotations ?? []).filter((a) => a.url && !seen.has(a.url) && seen.add(a.url)).map((a) => ({ url: a.url!, title: a.title ?? a.url! }));
+  return { answer: answer.slice(0, 4000), sources: sources.slice(0, 10) };
+}
+
 function safeJson(s: string): unknown {
   const m = s.match(/\{[\s\S]*\}/);
   try { return JSON.parse(m ? m[0] : s); } catch { return undefined; }

@@ -16,6 +16,7 @@ const StartBody = z.object({
   dailyBudget: z.number().positive().max(1_000_000),
   maxDailyBudget: z.number().positive().max(10_000_000).optional(),
   checkEveryHours: z.number().min(1).max(72).optional(),
+  objective: z.enum(["traffic", "sales"]).optional(),
 });
 /** Moves that spend more money need an owner; the rest can be approved by a reviewer. */
 const OWNER_ONLY = new Set<Move["kind"]>(["go_live", "scale_budget"]);
@@ -61,7 +62,7 @@ export function autopilotRoutes(rt: Runtime, { autopilot }: ReturnType<typeof cr
     if (access.isDemo) return c.json({ error: "the demo workspace has no live ad account; connect yours in Settings" }, 409);
     let url: URL;
     try { url = await assertPublicUrl(body.data.url.trim()); } catch (err) { return c.json({ error: (err as Error).message }, 400); }
-    const id = await autopilot.start({ workspaceId: access.workspaceId, brandId: access.brandId, accountId: body.data.accountId, url: url.href, userId: user.id, dailyBudget: body.data.dailyBudget, maxDailyBudget: body.data.maxDailyBudget, checkEveryHours: body.data.checkEveryHours });
+    const id = await autopilot.start({ workspaceId: access.workspaceId, brandId: access.brandId, accountId: body.data.accountId, url: url.href, userId: user.id, dailyBudget: body.data.dailyBudget, maxDailyBudget: body.data.maxDailyBudget, checkEveryHours: body.data.checkEveryHours, objective: body.data.objective });
     return c.json({ id }, 201);
   });
 

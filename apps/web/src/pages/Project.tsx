@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { adsManagerUrl, api, mediaUrl, studio, type StudioDesign, type StudioDirection, type StudioProjectDetail } from "../api.ts";
+import { FORMAT_LABEL, FORMATS, type FormatKey } from "@keel/core/studio";
+import { adsManagerUrl, api, mediaUrl, studio, type Concept, type StudioDesign, type StudioDirection, type StudioProjectDetail } from "../api.ts";
 import { IconArrowRight, IconCheck, IconChevron, IconLink, IconLock, IconRefresh, IconSparkle, IconX } from "../components/Icons.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { Button, Card, ErrorNote, Pill, Segmented, Skeleton, Spinner, cx } from "../components/ui.tsx";
@@ -9,12 +10,12 @@ import { Button, Card, ErrorNote, Pill, Segmented, Skeleton, Spinner, cx } from 
 const SIZE_LABEL = { square: "1:1 Feed", portrait: "4:5 Feed", story: "9:16 Stories" } as const;
 const ORDER = ["square", "portrait", "story"] as const;
 
-type Tab = "designs" | "research" | "storyboard" | "log";
+type Tab = "designs" | "concepts" | "research" | "storyboard" | "log";
 
 export function Project({ id }: { id: string }) {
   const q = useQuery({
     queryKey: ["studio", "project", id], queryFn: () => studio.project(id),
-    refetchInterval: (s) => (s.state.data && ["drafting", "launching"].includes(s.state.data.status) ? 2000 : false),
+    refetchInterval: (s) => (s.state.data && (["drafting", "launching"].includes(s.state.data.status) || s.state.data.concepts?.status === "making") ? 2000 : false),
   });
   const [tab, setTab] = useState<Tab>("designs");
   if (q.isLoading) return <Skeleton className="h-[480px]" />;
@@ -31,11 +32,11 @@ export function Project({ id }: { id: string }) {
         </div>
         {!drafting && (
           <Segmented label="View" value={tab} onChange={setTab} options={[
-            { value: "designs", label: "Designs" }, { value: "research", label: "Research" }, { value: "storyboard", label: "Storyboard" }, { value: "log", label: "Agent log" },
+            { value: "designs", label: "Designs" }, { value: "concepts", label: "Concepts" }, { value: "research", label: "Research" }, { value: "storyboard", label: "Storyboard" }, { value: "log", label: "Agent log" },
           ]} />
         )}
       </div>
-      {drafting ? <Progress p={p} /> : tab === "designs" ? <Board p={p} /> : tab === "research" ? <ResearchView p={p} /> : tab === "storyboard" ? <StoryboardView p={p} /> : <AgentLog p={p} />}
+      {drafting ? <Progress p={p} /> : tab === "designs" ? <Board p={p} /> : tab === "concepts" ? <ConceptsView p={p} /> : tab === "research" ? <ResearchView p={p} onRemix={() => setTab("concepts")} /> : tab === "storyboard" ? <StoryboardView p={p} /> : <AgentLog p={p} />}
     </div>
   );
 }
@@ -93,7 +94,14 @@ function AgentLog({ p, live }: { p: StudioProjectDetail; live?: boolean }) {
   );
 }
 
-function ResearchView({ p }: { p: StudioProjectDetail }) {
+function ResearchView({ p, onRemix }: { p: StudioProjectDetail; onRemix: () => void }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const remix = useMutation({
+    mutationFn: (adId: string) => studio.makeConcepts(p.id, { remixOf: adId }),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["studio", "project", p.id] }); toast("Remixing that ad's structure for your brand"); onRemix(); },
+    onError: (e) => toast(e instanceof Error ? e.message : String(e), "error"),
+  });
   const r = p.research;
   if (!r) return <Card className="p-6 text-ink-2">No research for this campaign.</Card>;
   const ins = r.insights;
@@ -139,6 +147,7 @@ function ResearchView({ p }: { p: StudioProjectDetail }) {
           <ol className="list-decimal space-y-2 pl-4 text-[14px]">{ins.recommendations.map((x) => <li key={x}>{x}</li>)}</ol>
         </Card>
       </div>
+      {r.voice && <VoiceView voice={r.voice} />}
       <div>
         <h3 className="mb-3 px-1 text-[13px] font-semibold tracking-[0.04em] text-ink-2 uppercase">What the agent studied</h3>
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
@@ -154,6 +163,11 @@ function ResearchView({ p }: { p: StudioProjectDetail }) {
                 {a.analysis && <div className="flex flex-wrap gap-1"><Pill>{a.analysis.format}</Pill>{a.analysis.emotion && <Pill>{a.analysis.emotion}</Pill>}</div>}
                 {a.libraryUrl && <a href={a.libraryUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12px] text-accent"><IconLink size={12} /> Ad Library</a>}
                 {a.siteUrl && <a href={a.siteUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[12px] text-accent"><IconLink size={12} /> Website</a>}
+                {a.source === "ad_library" && p.role !== "viewer" && (
+                  <button type="button" disabled={remix.isPending || p.concepts?.status === "making"} onClick={() => remix.mutate(a.id)} className="press mt-1 inline-flex items-center gap-1 text-[12px] font-medium text-accent disabled:opacity-50">
+                    <IconSparkle size={12} /> Remix for us
+                  </button>
+                )}
               </div>
             </Card>
           ))}
@@ -439,5 +453,128 @@ function LaunchPanel({ p }: { p: StudioProjectDetail }) {
         {account && account.role !== "owner" && <p className="text-[13px] text-ink-2">Only owners can launch.</p>}
       </Card>
     </aside>
+  );
+}
+
+function VoiceView({ voice }: { voice: NonNullable<NonNullable<StudioProjectDetail["research"]>["voice"]> }) {
+  return (
+    <section>
+      <h3 className="mb-3 px-1 text-[13px] font-semibold tracking-[0.04em] text-ink-2 uppercase">What customers say</h3>
+      <Card className="p-5">
+        <p className="text-[15px]">{voice.summary}</p>
+        {voice.phrases.length > 0 && (
+          <div className="mt-3 flex flex-wrap gap-1.5">{voice.phrases.map((x) => <span key={x} className="rounded-full bg-fill px-2.5 py-1 text-[13px]">“{x}”</span>)}</div>
+        )}
+      </Card>
+      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {voice.personas.map((pe) => (
+          <Card key={pe.name} className="p-5">
+            <div className="font-semibold">{pe.name}</div>
+            <p className="text-[13px] text-ink-2">{pe.who}</p>
+            {[["Pains", pe.pains], ["Wants", pe.desires], ["Doubts", pe.objections]].map(([k, xs]) => (xs as string[]).length ? (
+              <div key={k as string} className="mt-3">
+                <div className="text-[12px] font-medium text-ink-3 uppercase">{k as string}</div>
+                <ul className="mt-1 space-y-0.5 text-[14px]">{(xs as string[]).map((x) => <li key={x}>{x}</li>)}</ul>
+              </div>
+            ) : null)}
+            {pe.quotes.slice(0, 2).map((q) => <blockquote key={q} className="mt-3 border-l-2 border-accent pl-3 text-[13px] text-ink-2 italic">“{q}”</blockquote>)}
+          </Card>
+        ))}
+      </div>
+      <p className="mt-2 px-1 text-[12px] text-ink-3">From {voice.quotes.length} real comments ({[...new Set(voice.quotes.map((q) => q.source))].slice(0, 4).join(", ")}).</p>
+    </section>
+  );
+}
+
+const pct = (x?: number) => `${Math.round((x ?? 0) * 100)}`;
+
+/** The concept board: many formats, each pre-scored by Muse Spark. Pick the ones that go into the campaign. */
+function ConceptsView({ p }: { p: StudioProjectDetail }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const board = p.concepts;
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [formats, setFormats] = useState<Set<FormatKey>>(new Set());
+  const refresh = () => void qc.invalidateQueries({ queryKey: ["studio", "project", p.id] });
+  const make = useMutation({ mutationFn: () => studio.makeConcepts(p.id, { formats: formats.size ? [...formats] : undefined }), onSuccess: refresh, onError: (e) => toast(e instanceof Error ? e.message : String(e), "error") });
+  const add = useMutation({
+    mutationFn: () => studio.addConcepts(p.id, [...picked]),
+    onSuccess: (r) => { setPicked(new Set()); refresh(); toast(p.status === "launched" ? `Added ${r.added.length} ads to the live campaign` : `Added ${r.added.length} to the campaign`); },
+    onError: (e) => toast(e instanceof Error ? e.message : String(e), "error"),
+  });
+  const making = board?.status === "making" || make.isPending;
+  const items = board?.items ?? [];
+  const canWrite = p.role !== "viewer";
+  return (
+    <div className="space-y-6">
+      <Card className="p-5">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="max-w-2xl">
+            <h2 className="text-[18px] font-semibold">Concept board</h2>
+            <p className="mt-1 text-[14px] text-ink-2">Muse Wonder writes ideas across proven formats from the research, what customers say and what has worked for you before. Muse Spark scores each one for scroll-stop, clarity, product and text before anything is spent.</p>
+          </div>
+          {canWrite && <Button variant="primary" icon={<IconSparkle size={15} />} loading={making} onClick={() => make.mutate()}>{items.length ? "Make more" : "Make concepts"}</Button>}
+        </div>
+        {canWrite && (
+          <div className="mt-4 flex flex-wrap gap-1.5">
+            {FORMATS.map((f) => (
+              <button key={f} type="button" onClick={() => setFormats((s) => { const n = new Set(s); n.has(f) ? n.delete(f) : n.add(f); return n; })}
+                className={cx("press rounded-full border px-3 py-1 text-[13px] transition-colors duration-150", formats.has(f) ? "border-accent bg-accent/10 text-accent" : "hairline text-ink-2")}>{FORMAT_LABEL[f]}</button>
+            ))}
+            <span className="self-center pl-1 text-[12px] text-ink-3">{formats.size ? "Only these formats" : "All formats"}</span>
+          </div>
+        )}
+        {board?.status === "failed" && <p className="mt-3 text-[13px] text-critical">{board.error}</p>}
+      </Card>
+
+      {making && !items.length ? (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">{Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="aspect-square" />)}</div>
+      ) : !items.length ? null : (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+          {making && Array.from({ length: 2 }, (_, i) => <Skeleton key={`m${i}`} className="aspect-square" />)}
+          {items.map((c, i) => <ConceptCard key={c.id} c={c} i={i} picked={picked.has(c.id)} onPick={canWrite && c.addedAs === undefined ? () => setPicked((s) => { const n = new Set(s); n.has(c.id) ? n.delete(c.id) : n.add(c.id); return n; }) : undefined} />)}
+        </div>
+      )}
+
+      {picked.size > 0 && (
+        <div className="sticky bottom-20 z-10 md:bottom-6">
+          <Card className="mx-auto flex max-w-xl items-center justify-between gap-3 p-3 pl-5 shadow-[var(--shadow-pop)]">
+            <span className="text-[14px]">{picked.size} picked{p.status === "launched" ? " · they go live in the running campaign" : ""}</span>
+            <Button variant="primary" loading={add.isPending} onClick={() => add.mutate()}>Add to campaign</Button>
+          </Card>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConceptCard({ c, i, picked, onPick }: { c: Concept; i: number; picked: boolean; onPick?: () => void }) {
+  const sc = c.score;
+  return (
+    <Card className={cx("animate-enter overflow-hidden transition-shadow duration-200", picked && "ring-2 ring-accent")} style={{ animationDelay: `${Math.min(i, 12) * 25}ms` }}>
+      <button type="button" disabled={!onPick} onClick={onPick} className="press relative block w-full text-left disabled:cursor-default">
+        <img src={mediaUrl(c.renderRef ?? null)} alt={c.title} loading="lazy" className="aspect-square w-full object-cover" />
+        {picked && <span className="absolute right-2 bottom-2 grid h-7 w-7 place-items-center rounded-full bg-accent text-white"><IconCheck size={15} strokeWidth={2.5} /></span>}
+      </button>
+      <div className="space-y-1.5 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-[14px] font-semibold">{c.title}</span>
+          {c.addedAs !== undefined ? <Pill tone="ok">In campaign</Pill> : c.recommended ? <Pill tone="accent">Recommended</Pill> : null}
+        </div>
+        <div className="flex items-center gap-1.5 text-[12px] text-ink-3">
+          <span className="shrink-0 rounded-full bg-fill px-2 py-0.5 whitespace-nowrap text-ink-2">{FORMAT_LABEL[c.format]}</span>
+          {sc && <span className={cx("rounded-full px-2 py-0.5 font-semibold tabular-nums", sc.overall >= 0.75 ? "bg-ok/15 text-ok" : "bg-fill text-ink-2")} title="Muse Spark's pre-flight score">{pct(sc.overall)}</span>}
+          <span className="truncate">{c.remixOf ? `Remix of ${c.remixOf.pageName}` : c.persona ? `For ${c.persona}` : ""}</span>
+        </div>
+        {sc && (
+          <div className="grid grid-cols-5 gap-1 pt-0.5" title={`Scroll-stop ${pct(sc.scrollStop)} · Clarity ${pct(sc.clarity)} · Product ${pct(sc.product)} · Text ${pct(sc.text)} · Brand ${pct(sc.brand)}`}>
+            {([["Stop", sc.scrollStop], ["Clear", sc.clarity], ["Product", sc.product], ["Text", sc.text], ["Brand", sc.brand]] as const).map(([k, v]) => (
+              <div key={k}><div className="h-1 overflow-hidden rounded-full bg-fill"><div className="h-full rounded-full bg-accent" style={{ width: `${(v ?? 0) * 100}%` }} /></div><div className="mt-0.5 text-[10px] text-ink-3">{k}</div></div>
+            ))}
+          </div>
+        )}
+        {sc?.notes && <p className="line-clamp-2 text-[12px] text-ink-2">{sc.notes}</p>}
+      </div>
+    </Card>
   );
 }

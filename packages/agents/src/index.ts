@@ -14,4 +14,5 @@ export * from "./studio/models.ts";
 export * from "./studio/pipeline.ts";
 export * from "./autopilot.ts";
 export * from "./marketing.ts";
+export * from "./memory.ts";
 export * from "./studio/research.ts";

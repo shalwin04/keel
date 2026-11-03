@@ -55,4 +55,17 @@ const res = await get(`${base}/chat/completions`, {
 const json = (await res.json()) as { choices?: { message?: { tool_calls?: unknown; content?: string } }[]; error?: unknown };
 console.log(`\n■ Muse Wonder tool calling: HTTP ${res.status}`);
 console.log(JSON.stringify(json.choices?.[0]?.message ?? json.error ?? json).slice(0, 600));
+
+// Search grounding (Muse Wonder's web search) and Reddit, used by the research agent for what customers say.
+const { groundedSearch, searchReddit } = await import("@keel/meta");
+try {
+  const g = await groundedSearch(`${term} reviews complaints`);
+  console.log(`\n■ Search grounding: OK · ${g.sources.length} sources\n  ${g.answer.slice(0, 200).replace(/\n/g, " ")}`);
+  for (const s of g.sources.slice(0, 3)) console.log(`  · ${s.url}`);
+} catch (err) { console.log(`\n■ Search grounding: ${(err as Error).message} (set META_SEARCH_TOOL if Meta names the tool differently)`); }
+try {
+  const r = await searchReddit(term, 3);
+  console.log(`\n■ Reddit: ${r.length} threads`);
+  for (const t of r) console.log(`  · r/${t.sub}: ${t.title.slice(0, 80)}`);
+} catch (err) { console.log(`\n■ Reddit: ${(err as Error).message}`); }
 export {};

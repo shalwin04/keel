@@ -100,10 +100,11 @@ function AutopilotStart() {
   const accounts = (me.data?.accounts ?? []).filter((a) => !a.isDemo && a.role !== "viewer");
   const [url, setUrl] = useState("");
   const [budget, setBudget] = useState(500);
+  const [objective, setObjective] = useState<"traffic" | "sales">("traffic");
   const [account, setAccount] = useState("");
   const accountId = account || accounts[0]?.metaAccountId || "";
   const start = useMutation({
-    mutationFn: () => autopilot.start({ accountId, url: url.trim(), dailyBudget: budget }),
+    mutationFn: () => autopilot.start({ accountId, url: url.trim(), dailyBudget: budget, objective }),
     onSuccess: ({ id }) => void navigate({ to: "/autopilot/$id", params: { id } }),
   });
   const ok = url.trim().length > 3 && budget > 0 && !!accountId;
@@ -123,6 +124,9 @@ function AutopilotStart() {
             Daily budget
             <input type="number" min={1} value={budget} onChange={(e) => setBudget(Number(e.target.value))} className="w-24 bg-transparent text-[16px] text-ink tabular-nums outline-none" />
           </label>
+          <select aria-label="Goal" value={objective} onChange={(e) => setObjective(e.target.value as "traffic" | "sales")} className="h-12 rounded-xl border hairline bg-surface px-3 text-[15px]">
+            <option value="traffic">Website visits</option><option value="sales">Sales (Meta Pixel)</option>
+          </select>
           {accounts.length > 1 && (
             <select aria-label="Ad account" value={accountId} onChange={(e) => setAccount(e.target.value)} className="h-12 rounded-xl border hairline bg-surface px-3 text-[15px]">
               {accounts.map((a) => <option key={a.metaAccountId} value={a.metaAccountId}>{a.name}</option>)}
@@ -148,7 +152,7 @@ export function NewCampaign() {
   const accounts = (me.data?.accounts ?? []).filter((a) => !a.isDemo && a.role !== "viewer");
   const [f, setF] = useState({
     accountId: "", name: "", productName: "", productUrl: "", price: "", offer: "", audience: "", countries: "IN",
-    ageMin: 18, ageMax: 65, dailyBudget: 500, startDate: day(1), endDate: day(15), notes: "", competitors: "",
+    ageMin: 18, ageMax: 65, dailyBudget: 500, startDate: day(1), endDate: day(15), notes: "", competitors: "", objective: "traffic" as "traffic" | "sales",
   });
   const [shots, setShots] = useState<{ ref: string; preview: string }[]>([]);
   const shotInput = useRef<HTMLInputElement>(null);
@@ -187,7 +191,7 @@ export function NewCampaign() {
         productName: f.productName, productUrl: f.productUrl, productPhotos: photos.map((p) => p.ref), referenceImages: [], price: f.price, offer: f.offer,
         audience: f.audience, countries: f.countries.split(/[\s,]+/).filter(Boolean).map((c) => c.toUpperCase()).slice(0, 25), ageMin: f.ageMin, ageMax: f.ageMax,
         dailyBudget: f.dailyBudget, startDate: f.startDate, endDate: f.endDate, notes: f.notes,
-        competitors: f.competitors.split(/[,\n]+/).map((c) => c.trim()).filter(Boolean).slice(0, 8), competitorShots: shots.map((s) => s.ref),
+        competitors: f.competitors.split(/[,\n]+/).map((c) => c.trim()).filter(Boolean).slice(0, 8), competitorShots: shots.map((s) => s.ref), objective: f.objective,
       },
     }),
     onSuccess: (r) => void navigate({ to: "/create/$id", params: { id: r.id } }),
@@ -284,6 +288,11 @@ export function NewCampaign() {
             <Field label="Ad account">
               <select value={accountId} onChange={(e) => set("accountId", e.target.value)} className="h-10 w-full rounded-xl border hairline bg-surface px-3 text-[15px]">
                 {accounts.map((a) => <option key={a.metaAccountId} value={a.metaAccountId}>{a.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Goal" hint={f.objective === "sales" ? "Uses the account's Meta Pixel" : undefined}>
+              <select value={f.objective} onChange={(e) => set("objective", e.target.value as "traffic" | "sales")} className="h-10 w-full rounded-xl border hairline bg-surface px-3 text-[15px]">
+                <option value="traffic">Website visits</option><option value="sales">Sales</option>
               </select>
             </Field>
             <Field label="Campaign name" hint="Optional"><Input value={f.name} onChange={(e) => set("name", e.target.value)} placeholder={f.productName || "Monsoon launch"} /></Field>

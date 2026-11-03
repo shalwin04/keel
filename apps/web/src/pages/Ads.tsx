@@ -1,8 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
-import { api, featureLabel, isOn, mediaUrl, type Account, type AdRow } from "../api.ts";
-import { IconGrid, IconLock, IconPlay, IconPlus, IconUnlock } from "../components/Icons.tsx";
+import { api, featureLabel, isOn, mediaUrl, studio, type Account, type AdRow } from "../api.ts";
+import { IconCheck, IconGrid, IconLock, IconPlay, IconPlus, IconRefresh, IconSparkle, IconUnlock, IconX } from "../components/Icons.tsx";
 import { SeverityDot } from "../components/Severity.tsx";
 import { useToast } from "../components/Toast.tsx";
 import { Button, Card, Empty, ErrorNote, PageHeader, Pill, Skeleton, Switch, cx, relTime } from "../components/ui.tsx";
@@ -71,6 +71,7 @@ function AccountSection({ account: a }: { account: Account }) {
           </div>
         )}
       </div>
+      {!a.isDemo && <MemoryCard account={a} />}
       {ads.isLoading ? <Skeleton className="h-56" /> : ads.isError ? <ErrorNote error={ads.error} /> : !ads.data?.length ? (
         <Card className="px-5 py-8 text-center text-ink-2">No ads seen yet. They appear after the first check.</Card>
       ) : (
@@ -129,6 +130,41 @@ function AdCard({ ad, index }: { ad: AdRow; index: number }) {
           {ad.changedByKeel ? "Fixed by Keel · " : ""}{ad.variants > 0 ? `${ad.variants} variant${ad.variants === 1 ? "" : "s"} checked · ` : ""}baseline {ad.baselineLockedBy?.startsWith("keel") ? "locked on first sight" : "approved by a person"} {relTime(ad.baselineLockedAt)}
         </p>
       </div>
+    </Card>
+  );
+}
+
+/** What has worked for this brand: past ads read by Muse Spark, patterns found by Muse Wonder, plus Autopilot's lessons. */
+function MemoryCard({ account: a }: { account: Account }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const status = useQuery({ queryKey: ["memory-status", a.metaAccountId], queryFn: () => studio.memoryStatus(a.metaAccountId), refetchInterval: (q) => (q.state.data?.refreshing ? 3000 : false) });
+  const mem = useQuery({ queryKey: ["memory", a.metaAccountId, status.data?.refreshing], queryFn: () => studio.memory(a.metaAccountId) });
+  const refresh = useMutation({
+    mutationFn: () => studio.refreshMemory(a.metaAccountId),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ["memory-status", a.metaAccountId] }); toast("Reading your past ads"); },
+    onError: (e) => toast(e instanceof Error ? e.message : String(e), "error"),
+  });
+  const m = mem.data?.summary;
+  const busy = status.data?.refreshing || refresh.isPending;
+  return (
+    <Card className="mb-4 p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="max-w-2xl">
+          <h3 className="flex items-center gap-2 font-semibold"><IconSparkle size={15} className="text-accent" />What works for this brand</h3>
+          <p className="mt-0.5 text-[13px] text-ink-2">{m ? m.summary : "Keel reads your past ads and their results to learn what wins for you. Every new campaign starts from it."}</p>
+        </div>
+        {a.role !== "viewer" && <Button size="sm" icon={<IconRefresh size={13} />} loading={busy} onClick={() => refresh.mutate()}>{m ? "Refresh" : "Learn from past ads"}</Button>}
+      </div>
+      {m && (m.winners.length > 0 || m.avoid.length > 0) && (
+        <div className="mt-4 grid gap-4 md:grid-cols-2">
+          <ul className="space-y-1.5 text-[14px]">{[...m.winners, ...m.doMore].slice(0, 4).map((x) => <li key={x} className="flex gap-2"><IconCheck size={15} className="mt-0.5 shrink-0 text-ok" />{x}</li>)}</ul>
+          <ul className="space-y-1.5 text-[14px]">{[...m.losers, ...m.avoid].slice(0, 4).map((x) => <li key={x} className="flex gap-2"><IconX size={15} className="mt-0.5 shrink-0 text-ink-3" />{x}</li>)}</ul>
+        </div>
+      )}
+      {mem.data && (mem.data.ads.length > 0 || mem.data.learnings.length > 0) && (
+        <p className="mt-3 text-[12px] text-ink-3">From {mem.data.ads.length} past ads{mem.data.learnings.length ? ` and ${mem.data.learnings.length} lessons from live campaigns` : ""} · updated {relTime(mem.data.updatedAt)}</p>
+      )}
     </Card>
   );
 }

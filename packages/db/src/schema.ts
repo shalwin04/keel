@@ -207,6 +207,7 @@ export const studioProjects = pgTable("studio_projects", {
   research: jsonb("research"), // competitor ads + insights
   log: jsonb("log"), // the agent's running commentary
   launch: jsonb("launch"), // { campaignId, adsetId, ads: [{ designId, adId, creativeId }] }
+  concepts: jsonb("concepts"), // the concept board: many formats, each scored by Muse Spark before anything is spent
   error: text("error"),
   createdBy: text("created_by").notNull().references(() => users.id),
   createdAt: ts("created_at").defaultNow().notNull(),
@@ -254,3 +255,12 @@ export const autopilots = pgTable("autopilots", {
   createdAt: ts("created_at").defaultNow().notNull(),
   updatedAt: ts("updated_at").defaultNow().notNull(),
 }, (t) => [index("autopilots_ws_idx").on(t.workspaceId, t.createdAt), index("autopilots_due_idx").on(t.status, t.nextCheckAt)]);
+
+/** What Keel has learned works for a brand: its own past ads read by Muse Spark plus every Autopilot learning. Feeds every new campaign. */
+export const brandMemory = pgTable("brand_memory", {
+  brandId: text("brand_id").primaryKey().references(() => brands.id),
+  summary: jsonb("summary"), // BrandMemory
+  ads: jsonb("ads"), // the past ads that were read, with their results
+  learnings: jsonb("learnings"), // [{ at, text, source }]
+  updatedAt: ts("updated_at").defaultNow().notNull(),
+});

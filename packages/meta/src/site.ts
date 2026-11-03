@@ -234,3 +234,60 @@ export async function crawlSite(rawUrl: string, o: { maxProducts?: number; log?:
     };
   });
 }
+
+// ── Voice of the customer: reviews and threads ──────────────────────────────
+
+export interface CustomerQuote { text: string; source: string; url?: string; rating?: number }
+
+const REVIEW_EXTRACT = `(() => {
+  const out = [];
+  const push = (t, r) => { t = (t || '').replace(/\\s+/g, ' ').trim(); if (t.length >= 25 && t.length <= 1200) out.push({ text: t, rating: r }); };
+  const walk = (x) => { if (!x || typeof x !== 'object') return; if (Array.isArray(x)) return x.forEach(walk);
+    if (x['@type'] === 'Review' || x.reviewBody) push(x.reviewBody || x.description, Number(x.reviewRating && x.reviewRating.ratingValue) || undefined);
+    for (const k of ['review', 'reviews', '@graph', 'itemListElement']) if (x[k]) walk(x[k]); };
+  for (const s of document.querySelectorAll('script[type="application/ld+json"]')) { try { walk(JSON.parse(s.textContent || '')) } catch {} }
+  const sel = ['[itemprop="reviewBody"]', '[data-hook="review-body"]', '[data-service-review-text-typography]', '.review-text', '.review-content', '.review__body', '.jdgm-rev__body', '.yotpo-review-content', '.spr-review-content-body', '.stamped-review-content-body', '[class*="ReviewText"]', '[class*="review-body"]', '[class*="reviewText"]', '.t-ZTKy', '.ZmyHeo'];
+  for (const q of sel) for (const el of document.querySelectorAll(q)) push(el.textContent);
+  const seen = new Set(); return out.filter((r) => !seen.has(r.text) && seen.add(r.text)).slice(0, 40);
+})()`;
+
+/** Reads customer reviews on any page: JSON-LD reviews, the common review widgets (Judge.me, Yotpo, Stamped, Shopify), Amazon, Trustpilot, Flipkart. */
+export async function readReviews(rawUrl: string): Promise<{ url: string; title: string; quotes: CustomerQuote[] }> {
+  const target = await assertPublicUrl(rawUrl);
+  return withPage({ width: 1280, height: 900 }, async (page) => {
+    await page.goto(target.href, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    await page.waitForLoadState("networkidle", { timeout: 6_000 }).catch(() => undefined);
+    // Review widgets often load on scroll.
+    for (let k = 0; k < 4; k++) { await page.mouse.wheel(0, 2500); await page.waitForTimeout(500); }
+    const found = (await page.evaluate(REVIEW_EXTRACT)) as { text: string; rating?: number }[];
+    const host = new URL(page.url() as string).host.replace(/^www\./, "");
+    return { url: page.url() as string, title: (await page.title()) as string, quotes: found.map((r) => ({ ...r, source: `review on ${host}`, url: page.url() as string })) };
+  });
+}
+
+const REDDIT_UA = "KeelResearch/1.0 (marketing research)";
+
+/** Reddit's public JSON search: what people ask and complain about in a category. */
+export async function searchReddit(query: string, limit = 8): Promise<{ title: string; sub: string; score: number; comments: number; url: string; text: string }[]> {
+  const u = new URL("https://www.reddit.com/search.json");
+  u.searchParams.set("q", query); u.searchParams.set("sort", "relevance"); u.searchParams.set("t", "all"); u.searchParams.set("limit", String(limit));
+  const res = await fetch(u, { headers: { "User-Agent": REDDIT_UA }, signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`Reddit search: HTTP ${res.status}`);
+  const j = (await res.json()) as { data?: { children?: { data: { title: string; subreddit: string; score: number; num_comments: number; permalink: string; selftext?: string } }[] } };
+  return (j.data?.children ?? []).map(({ data: d }) => ({ title: d.title, sub: d.subreddit, score: d.score, comments: d.num_comments, url: `https://www.reddit.com${d.permalink}`, text: (d.selftext ?? "").slice(0, 600) }));
+}
+
+/** A Reddit thread's top comments (by score). */
+export async function readRedditThread(url: string, limit = 15): Promise<CustomerQuote[]> {
+  const u = new URL(url);
+  if (!/(^|\.)reddit\.com$/.test(u.hostname)) throw new Error("not a Reddit thread");
+  const res = await fetch(`https://www.reddit.com${u.pathname.replace(/\/$/, "")}.json?sort=top&limit=${limit}`, { headers: { "User-Agent": REDDIT_UA }, signal: AbortSignal.timeout(20_000) });
+  if (!res.ok) throw new Error(`Reddit thread: HTTP ${res.status}`);
+  const j = (await res.json()) as { data: { children: { data: { title?: string; selftext?: string; body?: string; score?: number; subreddit?: string } }[] } }[];
+  const post = j[0]?.data.children[0]?.data;
+  const sub = post?.subreddit ? `r/${post.subreddit}` : "Reddit";
+  const out: CustomerQuote[] = [];
+  if (post?.selftext && post.selftext.length > 25) out.push({ text: post.selftext.slice(0, 1000), source: sub, url });
+  for (const c of j[1]?.data.children ?? []) if (c.data.body && c.data.body.length > 25 && c.data.body !== "[deleted]") out.push({ text: c.data.body.slice(0, 1000), source: sub, url });
+  return out.slice(0, limit);
+}

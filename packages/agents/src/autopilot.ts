@@ -5,12 +5,13 @@ import {
 } from "@keel/core";
 import { schema, type Db } from "@keel/db";
 import { crawlSite, inlineImageHref, type AdsGraphClient, type SiteCrawl } from "@keel/meta";
+import type { Memory } from "./memory.ts";
 import type { StudioModels } from "./studio/models.ts";
 import type { LaunchInfo, Studio } from "./studio/pipeline.ts";
 
 export type AutopilotStage = "site" | "research" | "craft" | "launch" | "learn" | "update";
 export interface AutopilotLog { at: string; stage: AutopilotStage; text: string; kind: "info" | "decision" | "warn" }
-export interface AutopilotSettings { dailyBudget: number; maxDailyBudget: number; checkEveryHours: number; minImpressions: number }
+export interface AutopilotSettings { dailyBudget: number; maxDailyBudget: number; checkEveryHours: number; minImpressions: number; objective?: "traffic" | "sales" }
 export type AutopilotRow = typeof schema.autopilots.$inferSelect;
 
 export interface AutopilotDeps {
@@ -20,8 +21,10 @@ export interface AutopilotDeps {
   audit(actor: string, event: string, payload: unknown): Promise<void>;
   adsFor(accountId: string): Promise<AdsGraphClient>;
   crawl?: typeof crawlSite;
+  memory?: Memory;
 }
 
+const host = (u: string) => { try { return new URL(u).host.replace(/^www\./, ""); } catch { return u; } };
 const day = (n: number) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
 const CURRENCY_OF: Record<string, string> = { IN: "INR", US: "USD", GB: "GBP", AE: "AED", SG: "SGD", AU: "AUD", CA: "CAD", DE: "EUR", FR: "EUR", NL: "EUR", ES: "EUR", IT: "EUR" };
 
@@ -37,7 +40,7 @@ export function formatPrice(price: string | undefined, currency: string | undefi
 }
 
 /** The brief Studio needs, written from what the agent read on the site. */
-export function briefFromSite(site: SiteCrawl, profile: SiteProfile, dailyBudget: number): { brief: Brief; hero: SiteCrawl["products"][number] | undefined } {
+export function briefFromSite(site: SiteCrawl, profile: SiteProfile, dailyBudget: number, objective: "traffic" | "sales" = "traffic"): { brief: Brief; hero: SiteCrawl["products"][number] | undefined } {
   const hero = site.products[profile.heroProduct] ?? site.products[0];
   const photos = hero?.imageRefs.length ? hero.imageRefs : site.shareImageRef ? [site.shareImageRef] : [];
   if (!photos.length) throw new Error("Couldn't find any product photos on the site. Start from a brief instead and upload a photo.");
@@ -67,6 +70,7 @@ export function briefFromSite(site: SiteCrawl, profile: SiteProfile, dailyBudget
     competitors: profile.competitors.slice(0, 6),
     brand: profile.brand.name,
     logoRef: site.logoRef,
+    objective,
   });
   return { brief, hero };
 }
@@ -81,19 +85,32 @@ export function planMoves(o: { perf: PerformanceSnapshot; learning: Learning | u
   const out: Omit<Move, "id" | "status" | "createdAt">[] = [];
   const active = perf.ads.filter((a) => a.status === "ACTIVE");
   const mature = active.filter((a) => a.impressions >= settings.minImpressions);
-  const best = [...mature].sort((a, b) => b.ctr - a.ctr)[0];
+  // Sales campaigns are judged on cost per purchase once there are enough purchases to trust; otherwise on click-through.
+  const purchases = mature.reduce((n, a) => n + (a.purchases ?? 0), 0);
+  const sales = purchases >= 10;
+  const byCpa = mature.filter((a) => (a.purchases ?? 0) >= 3).sort((a, b) => (a.cpa ?? Infinity) - (b.cpa ?? Infinity));
+  const best = sales ? byCpa[0] : [...mature].sort((a, b) => b.ctr - a.ctr)[0];
   let remaining = active.length;
   if (best && mature.length >= 2) {
     for (const a of mature) {
-      if (a === best || a.ctr >= best.ctr * 0.5 || remaining <= 1 || open("pause_ad", (m) => m.params.adId === a.adId)) continue;
+      if (a === best || remaining <= 1 || open("pause_ad", (m) => m.params.adId === a.adId)) continue;
+      const weak = sales
+        ? a.spend >= (best.cpa ?? 0) * 3 && (!a.purchases || (a.cpa ?? 0) > (best.cpa ?? 0) * 2)
+        : a.ctr < best.ctr * 0.5;
+      if (!weak) continue;
       remaining--;
-      out.push({ kind: "pause_ad", title: `Pause "${a.title}"`, why: `${a.ctr.toFixed(2)}% CTR after ${a.impressions.toLocaleString()} impressions, under half of "${best.title}" (${best.ctr.toFixed(2)}%). Its budget goes to the ads that work.`, params: { adId: a.adId, direction: a.direction } });
+      const why = sales
+        ? `${a.purchases ? `${perf.currency} ${(a.cpa ?? 0).toFixed(0)} per purchase` : "no purchases"} after ${perf.currency} ${a.spend.toFixed(0)} spent, against ${perf.currency} ${(best.cpa ?? 0).toFixed(0)} for "${best.title}". Its budget goes to the ads that sell.`
+        : `${a.ctr.toFixed(2)}% CTR after ${a.impressions.toLocaleString()} impressions, under half of "${best.title}" (${best.ctr.toFixed(2)}%). Its budget goes to the ads that work.`;
+      out.push({ kind: "pause_ad", title: `Pause "${a.title}"`, why, params: { adId: a.adId, direction: a.direction } });
     }
   }
   const spent = perf.totals.spend;
   const next = Math.round(settings.dailyBudget * 1.25);
-  if (launch.active && learning?.winner != null && learning.confidence !== "low" && best && best.ctr >= 1 && spent >= settings.dailyBudget * 2 && next <= settings.maxDailyBudget && !open("scale_budget")) {
-    out.push({ kind: "scale_budget", title: `Raise the daily budget to ${next.toLocaleString()} ${perf.currency}`, why: `"${best.title}" is a clear winner at ${best.ctr.toFixed(2)}% CTR with real volume. A 25% step keeps Meta's learning phase stable. Your cap is ${settings.maxDailyBudget.toLocaleString()}.`, params: { dailyBudget: next } });
+  const strong = best && (sales ? (best.roas ?? 0) >= 1.5 : best.ctr >= 1);
+  if (launch.active && learning?.winner != null && learning.confidence !== "low" && best && strong && spent >= settings.dailyBudget * 2 && next <= settings.maxDailyBudget && !open("scale_budget")) {
+    const proof = sales ? `${(best.roas ?? 0).toFixed(1)}x return on ad spend` : `${best.ctr.toFixed(2)}% CTR`;
+    out.push({ kind: "scale_budget", title: `Raise the daily budget to ${next.toLocaleString()} ${perf.currency}`, why: `"${best.title}" is a clear winner at ${proof} with real volume. A 25% step keeps Meta's learning phase stable. Your cap is ${settings.maxDailyBudget.toLocaleString()}.`, params: { dailyBudget: next } });
   }
   if (learning?.nextIdea && learning.confidence !== "low" && o.directions < 6 && !open("new_variant")) {
     out.push({ kind: "new_variant", title: `Add a new variant: "${learning.nextIdea.title}"`, why: learning.nextIdea.why || `Builds on what's working in the winning direction and tests one new idea.`, params: { idea: learning.nextIdea, direction: learning.nextIdea.basedOn } });
@@ -121,10 +138,10 @@ export function createAutopilot(d: AutopilotDeps) {
     mutate(id, (r) => ({ log: [...((r.log ?? []) as AutopilotLog[]), { at: new Date().toISOString(), stage, text, kind }].slice(-300) })).catch(() => undefined);
   const settingsOf = (r: AutopilotRow) => r.settings as AutopilotSettings;
 
-  async function start(o: { workspaceId: string; brandId: string; accountId: string; url: string; userId: string; dailyBudget: number; maxDailyBudget?: number; checkEveryHours?: number }) {
+  async function start(o: { workspaceId: string; brandId: string; accountId: string; url: string; userId: string; dailyBudget: number; maxDailyBudget?: number; checkEveryHours?: number; objective?: "traffic" | "sales" }) {
     const id = randomUUID();
     const settings: AutopilotSettings = {
-      dailyBudget: o.dailyBudget, maxDailyBudget: o.maxDailyBudget ?? o.dailyBudget * 2,
+      dailyBudget: o.dailyBudget, maxDailyBudget: o.maxDailyBudget ?? o.dailyBudget * 2, objective: o.objective ?? "traffic",
       checkEveryHours: o.checkEveryHours ?? Number(process.env.AUTOPILOT_CHECK_HOURS ?? 6), minImpressions: Number(process.env.AUTOPILOT_MIN_IMPRESSIONS ?? 1000),
     };
     await db.insert(schema.autopilots).values({ id, workspaceId: o.workspaceId, brandId: o.brandId, accountId: o.accountId, url: o.url, status: "reading", settings, moves: [], log: [], learnings: [], performance: [], createdBy: o.userId });
@@ -147,11 +164,20 @@ export function createAutopilot(d: AutopilotDeps) {
       await mutate(id, () => ({ site: { ...site, text: site.text.slice(0, 1500) }, profile }));
       await log(id, "site", `${profile.brand.name}: ${profile.brand.oneLiner}`, "decision");
       await log(id, "site", `Audience: ${profile.audience.summary} (${profile.audience.ageMin}-${profile.audience.ageMax}, ${profile.audience.countries.join(", ")})`, "decision");
-      const { brief, hero } = briefFromSite(site, profile, settingsOf(ap).dailyBudget);
+      const { brief, hero } = briefFromSite(site, profile, settingsOf(ap).dailyBudget, settingsOf(ap).objective);
       if (hero) await log(id, "site", `Leading with ${hero.name}${brief.price ? ` (${brief.price})` : ""}: ${profile.heroWhy}`, "decision");
       if (profile.offer) await log(id, "site", `Live offer on the site: ${profile.offer}`, "decision");
 
       await mutate(id, () => ({ status: "crafting" }));
+      // Learn from the brand's own past ads first (refreshed weekly), so every new idea builds on what has worked.
+      if (d.memory) {
+        const mem = await d.memory.get(ap.brandId);
+        if (!mem?.summary || Date.now() - mem.updatedAt.getTime() > 7 * 86_400_000) {
+          await log(id, "research", "Reading your past ads to learn what has worked");
+          const fresh = await d.memory.refresh(ap.brandId, ap.createdBy).catch((err) => { void log(id, "research", `Couldn't read past ads (${(err as Error).message.slice(0, 100)})`, "warn"); return undefined; });
+          if (fresh?.ads.length) await log(id, "research", `Read ${fresh.ads.length} past ads: ${fresh.summary?.winners[0] ?? fresh.summary?.summary ?? ""}`, "decision");
+        }
+      }
       const projectId = await d.studio.create({ workspaceId: ap.workspaceId, brandId: ap.brandId, accountId: ap.accountId, name: `${profile.brand.name} · ${brief.productName}`.slice(0, 80), brief, userId: ap.createdBy, start: false });
       await mutate(id, () => ({ projectId }));
       await log(id, "research", `Researching ${brief.competitors.length ? brief.competitors.join(", ") : "the category"} on Meta`);
@@ -168,6 +194,19 @@ export function createAutopilot(d: AutopilotDeps) {
       await db.update(schema.studioDesigns).set({ picked: true }).where(and(eq(schema.studioDesigns.projectId, projectId), inArray(schema.studioDesigns.direction, pick)));
       const dirs = (p.directions ?? []) as Direction[];
       await log(id, "craft", `${pick.length} direction${pick.length > 1 ? "s" : ""} ready to test: ${pick.map((i) => dirs[i]?.title).join(", ")}`, "decision");
+      // Then the concept board: many formats, pre-scored by Muse Spark; the two strongest join the campaign.
+      try {
+        await log(id, "craft", "Making a concept board across formats");
+        await d.studio.makeConcepts(projectId);
+        const [withBoard] = await db.select({ concepts: schema.studioProjects.concepts }).from(schema.studioProjects).where(eq(schema.studioProjects.id, projectId));
+        const top = ((withBoard?.concepts as { items?: { id: string; title: string; recommended?: boolean }[] } | null)?.items ?? []).filter((c) => c.recommended).slice(0, 2);
+        if (top.length) {
+          await d.studio.addConcepts(projectId, top.map((c) => c.id), ap.createdBy);
+          await log(id, "craft", `Added the two strongest concepts: ${top.map((c) => c.title).join(", ")}`, "decision");
+        }
+      } catch (err) {
+        await log(id, "craft", `Concept board skipped (${(err as Error).message.slice(0, 120)})`, "warn");
+      }
       await mutate(id, () => ({ status: "ready" }));
       await log(id, "launch", "Waiting for your go-ahead to launch", "info");
       await d.audit("keel", "autopilot.ready", { autopilotId: id, projectId, directions: pick.length });
@@ -236,7 +275,7 @@ export function createAutopilot(d: AutopilotDeps) {
       const [rows, statuses] = await Promise.all([ads.adInsights(r.accountId, launch.ads.map((a) => a.adId)), ads.statuses(launch.ads.map((a) => a.adId)).catch(() => ({} as Record<string, string>))]);
       const perfAds: AdPerformance[] = launch.ads.map((a) => {
         const m = rows.find((x) => x.adId === a.adId);
-        return { adId: a.adId, direction: a.direction, title: dirs[a.direction]?.title ?? a.adId, status: statuses[a.adId] ?? (launch.active ? "ACTIVE" : "PAUSED"), impressions: m?.impressions ?? 0, reach: m?.reach ?? 0, clicks: m?.clicks ?? 0, ctr: m?.ctr ?? 0, cpc: m?.cpc ?? 0, spend: m?.spend ?? 0, frequency: m?.frequency ?? 0 };
+        return { adId: a.adId, direction: a.direction, title: dirs[a.direction]?.title ?? a.adId, status: statuses[a.adId] ?? (launch.active ? "ACTIVE" : "PAUSED"), impressions: m?.impressions ?? 0, reach: m?.reach ?? 0, clicks: m?.clicks ?? 0, ctr: m?.ctr ?? 0, cpc: m?.cpc ?? 0, spend: m?.spend ?? 0, frequency: m?.frequency ?? 0, purchases: m?.purchases, cpa: m?.cpa, roas: m?.roas };
       });
       const t = perfAds.reduce((s, a) => ({ impressions: s.impressions + a.impressions, clicks: s.clicks + a.clicks, spend: s.spend + a.spend }), { impressions: 0, clicks: 0, spend: 0 });
       const perf: PerformanceSnapshot = { at: new Date().toISOString(), currency: launch.currency ?? "", ads: perfAds, totals: { ...t, ctr: t.impressions ? (t.clicks / t.impressions) * 100 : 0 } };
@@ -257,6 +296,8 @@ export function createAutopilot(d: AutopilotDeps) {
         moves: [...((row.moves ?? []) as Move[]), ...moves.map((m) => ({ ...m, id: randomUUID(), status: "pending", createdAt: new Date().toISOString() }) as Move)],
       }));
       for (const m of moves) await log(id, "update", `Proposed: ${m.title}`, "decision");
+      // Winners go to the brand's memory, so the next campaign starts from them.
+      if (learning.confidence !== "low") await d.memory?.remember(r.brandId, learning.learnings, `Autopilot ${host(r.url)}`).catch(() => undefined);
       await d.audit("keel", "autopilot.learned", { autopilotId: id, impressions: t.impressions, winner: learning.winner, moves: moves.map((m) => m.kind) });
     } catch (err) {
       await mutate(id, () => ({ nextCheckAt: next }));

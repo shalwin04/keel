@@ -1,7 +1,8 @@
 import { z } from "zod";
 import {
   AdAnalysisSchema, DirectionSchema, InsightsSchema, LearnSchema, SiteProfileSchema,
-  type AdAnalysis, type Learn, type PerformanceSnapshot, type SiteProfile, type Brief, type CompetitorAd, type Direction, type Insights, type ReelShot, type Rulebook,
+  BrandMemorySchema, ConceptScoreSchema, FORMATS, FormatCopySchema, VoiceSchema,
+  type AdAnalysis, type BrandMemory, type ConceptScore, type FormatKey, type Learn, type PerformanceSnapshot, type SiteProfile, type Voice, type Brief, type CompetitorAd, type Direction, type Insights, type ReelShot, type Rulebook,
 } from "@keel/core";
 import { callJson, config, editImage, generateImage, metaClient, renderSvgToPng, runTools, type AgentTool, type ImageInput, type ModelCallInfo, type SiteCrawl } from "@keel/meta";
 import { rulebookBlock } from "../prompts.ts";
@@ -18,7 +19,7 @@ export interface StudioModels {
   researchLoop(o: { system: string; text: string; tools: AgentTool[]; maxSteps: number; onText: (t: string) => Promise<void> }): Promise<string>;
   analyzeAd(ad: { image?: ImageInput; body?: string; title?: string; pageName: string }): Promise<AdAnalysis>;
   synthesize(brief: Brief, brand: string, ads: CompetitorAd[], notes?: string): Promise<Insights>;
-  planDirections(brief: Brief, brand: string, product: ImageInput[], rulebook: Rulebook | undefined, insights: Insights | undefined): Promise<Direction[]>;
+  planDirections(brief: Brief, brand: string, product: ImageInput[], rulebook: Rulebook | undefined, insights: Insights | undefined, extra?: { voice?: Voice; memory?: BrandMemory }): Promise<Direction[]>;
   /** One scene candidate. With a product photo, Muse Image places the real product in it (productInScene). */
   generateScene(direction: Direction, brief: Brief, product: ImageInput[], variant: number): Promise<{ bytes: Buffer; productInScene: boolean }>;
   rankScenes(candidates: ImageInput[], product: ImageInput, direction: Direction): Promise<SceneRanking>;
@@ -29,6 +30,14 @@ export interface StudioModels {
   readSite(site: SiteCrawl, images: ImageInput[]): Promise<SiteProfile>;
   /** Autopilot: what the campaign's results say, and one new idea built on what's working. */
   learn(o: { brand: string; product: string; directions: Direction[]; perf: PerformanceSnapshot; history: { at: string; summary: string }[]; insights?: Insights }): Promise<Learn>;
+  /** Voice of the customer: personas, pains and the exact words customers use, from real reviews and threads. */
+  voiceOfCustomer(o: { brief: Brief; brand: string; quotes: { text: string; source: string }[] }): Promise<Omit<Voice, "quotes">>;
+  /** The concept board: many ideas across formats, grounded in research, customer voice and brand memory. */
+  planConcepts(o: { brief: Brief; brand: string; product: ImageInput[]; insights?: Insights; voice?: Voice; memory?: BrandMemory; rulebook?: Rulebook; count: number; formats: FormatKey[]; remix?: { image?: ImageInput; analysis?: AdAnalysis; pageName: string } }): Promise<Direction[]>;
+  /** Pre-flight: Muse Spark predicts how a rendered concept will do in the feed, before anything is spent. */
+  scoreConcept(design: ImageInput, product: ImageInput, concept: Direction): Promise<ConceptScore>;
+  /** Brand memory: what the brand's own past ads say works, from their results and Spark's read of each. */
+  learnMemory(o: { brand: string; ads: { name: string; analysis?: AdAnalysis; impressions: number; ctr: number; cpc: number; spend: number; purchases?: number; cpa?: number; roas?: number; body?: string; title?: string }[]; learnings: string[] }): Promise<BrandMemory>;
 }
 
 // ── prompts ──────────────────────────────────────────────────────────────────
@@ -101,6 +110,46 @@ and tests one new idea (a sharper hook, a new scene, a different proof point); b
 Never invent claims, prices or offers.
 JSON: {"summary","winner": number|null,"confidence":"low"|"medium"|"high","learnings":[string],"nextIdea": {"basedOn","title","angle","hook","headline","subline","primaryText","scenePrompt","why"}|null}`;
 
+const VOICE = `You are a consumer-insights researcher. Below are real things customers wrote (reviews, forum threads, Q&A) about this product or category.
+Find who buys it and why: 2-3 personas (a short name like "The monsoon commuter", who they are, their pains, desires and objections, and up to 3 quotes
+copied EXACTLY from the material below). Then list up to 10 short phrases customers actually use, verbatim, that would make strong ad hooks.
+Never invent quotes or paraphrase them as quotes. If the material is thin, say so in the summary.
+JSON: {"summary","personas":[{"name","who","pains":[],"desires":[],"objections":[],"quotes":[]}],"phrases":[]}`;
+
+const CONCEPTS = (n: number, formats: string[]) => `You are the creative director at a performance agency making a concept board of ${n} different Meta static ads (feed, Stories, Reels).
+Use the competitor insights, what customers actually say (personas and their phrases), what has worked for this brand before (memory), and the product photos.
+Spread the ideas across personas and these formats: ${formats.join(", ")}. Formats:
+- classic: a hero image of the product in a scene with a headline
+- notes: an iPhone Notes-app screenshot; copy.lines = 3-5 short punchy lines (features, reasons, a mini list)
+- tweet: a social post card from the brand; copy.quote = the post text (≤ 200 chars, conversational)
+- testimonial: a customer quote card. copy.quote MUST be a real customer quote copied exactly from the material provided, copy.author = its source (e.g. "Amazon review"). If there are no real quotes, don't use this format.
+- versus: us vs a generic alternative ("Typical raincoat", never a named competitor); copy.rows = 3-4 {label, us, them} with only facts from the brief or site
+- beforeafter: copy.scene2 = the "before" scene (the problem), scenePrompt = the "after" scene with the product; copy.before/after = 1-2 word labels
+- offer: only if the brief states an offer; headline supports it
+- meme: a relatable situation for the scenePrompt (no product), copy.top / copy.bottom = a meme caption in the audience's voice
+- ugc: a creator-style lifestyle scene with the product; copy.sticker = a POV-style caption (e.g. "POV: …")
+For each: title, format, persona, angle, hook, rationale (which insight or customer phrase it uses), scenePrompt (environment only, never the product itself; "" if the format needs none),
+headline (≤ 6 words), subline (≤ 12 words), primaryText (≤ 2 short sentences), cta, palette {base, accent, ink} on-brand, copy (as above, other fields empty).
+Lead with customers' own words. Never invent claims, prices, discounts, reviews or numbers. Respect the rulebook.
+JSON: {"concepts":[ ... ]}`;
+
+const REMIX = `You are a creative director. Image 1 is a competitor's ad that has been running for a long time (so it probably works). Learn its STRUCTURE:
+the format, how the hook is built, the layout, the pacing of the copy, the emotional trigger. Then write ONE concept for OUR brand that uses the same structure
+with our product, our voice and our own claims. Never copy their words, logo, characters, imagery or brand assets: same skeleton, new everything.
+Return it in the concept format (title, format from: ${FORMATS.join(", ")}, persona, angle, hook, rationale = which structural idea you borrowed, scenePrompt, headline, subline, primaryText, cta, palette, copy).
+JSON: {"concepts":[ one concept ]}`;
+
+const SCORE = `You are Meta's best creative strategist doing a pre-flight check on a static ad before money is spent. Image 1 is the REAL product photo, image 2 the ad.
+Score 0-1: scrollStop (would a thumb stop in a busy feed in 0.5 s: contrast, a human/emotional hook, novelty), clarity (is the message understood in 1 second),
+product (is the real product clear and undistorted), text (legible at phone size, not too much, inside safe zones), brand (on-brand, premium, trustworthy).
+overall = your honest prediction of relative performance. notes = the single most useful fix, in one sentence.
+JSON: {"overall","scrollStop","clarity","product","text","brand","notes"}`;
+
+const MEMORY = `You are the brand's performance strategist. Below are the brand's own past Meta ads with lifetime results and a description of each creative,
+plus lessons from campaigns Keel ran. Find what works FOR THIS BRAND: patterns shared by the winners (by CTR, cost per click, purchases/ROAS when present, with
+enough impressions to trust), patterns shared by the losers, what to do more of and what to avoid. Be specific (formats, hooks, visuals, copy), evidence-based.
+JSON: {"summary","winners":[],"losers":[],"doMore":[],"avoid":[]}`;
+
 const shotPrompt = (d: Direction, extra = "") => [
   d.scenePrompt,
   d.art.camera && `Camera: ${d.art.camera}.`, d.art.lighting && `Lighting: ${d.art.lighting}.`, d.art.grade && `Grade: ${d.art.grade}.`,
@@ -140,12 +189,14 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
         notes ? `The research agent's own notes: ${notes.slice(0, 1500)}` : "",
         "Competitor ads (source \"site\" = the competitor's website homepage, not an ad):", ...ads.map((a) => JSON.stringify({ id: a.id, source: a.source, advertiser: a.pageName, daysRunning: a.daysRunning, copy: a.body?.slice(0, 300), headline: a.title, analysis: a.analysis }))].join("\n"), [], "high"),
 
-    async planDirections(brief, brand, product, rulebook, insights) {
+    async planDirections(brief, brand, product, rulebook, insights, extra) {
       const out = await call("strategy", config.models.wonder, PLAN_SYSTEM, z.object({ directions: z.array(DirectionSchema).min(1).max(3) }),
         [`Brand: ${brand}`, `Product: ${brief.productName} (${brief.productUrl})`, brief.price && `Price: ${brief.price}`, brief.offer && `Offer: ${brief.offer}`,
           `Audience: ${brief.audience || "not specified"} · ages ${brief.ageMin}-${brief.ageMax} · ${brief.countries.join(", ")}`,
           `Flight: ${brief.startDate} to ${brief.endDate}`, brief.notes && `Notes: ${brief.notes}`,
-          insights ? `COMPETITOR INSIGHTS:\n${JSON.stringify(insights)}` : "No competitor research available.", rulebookBlock(rulebook)].filter(Boolean).join("\n"),
+          insights ? `COMPETITOR INSIGHTS:\n${JSON.stringify(insights)}` : "No competitor research available.",
+          extra?.voice && `WHAT CUSTOMERS SAY (use their words for hooks): ${JSON.stringify({ summary: extra.voice.summary, personas: extra.voice.personas.map((p) => ({ name: p.name, pains: p.pains, desires: p.desires })), phrases: extra.voice.phrases })}`,
+          extra?.memory && `WHAT HAS WORKED FOR THIS BRAND BEFORE: ${JSON.stringify(extra.memory)}`, rulebookBlock(rulebook)].filter(Boolean).join("\n"),
         product.slice(0, 4), "high");
       return out.directions;
     },
@@ -196,6 +247,30 @@ export function metaStudioModels(onCall?: StudioCall): StudioModels {
         `Results (${o.perf.currency}):`, ...o.perf.ads.map((a) => `direction ${a.direction} (${a.title}, ${a.status}): ${a.impressions} impressions, ${a.clicks} link clicks, CTR ${a.ctr.toFixed(2)}%, CPC ${a.cpc.toFixed(2)}, spend ${a.spend.toFixed(2)}, frequency ${a.frequency.toFixed(2)}`),
         o.history.length ? `Earlier reads:\n${o.history.slice(-3).map((h) => `${h.at.slice(0, 10)}: ${h.summary}`).join("\n")}` : "",
         o.insights ? `Competitor insights: ${o.insights.summary}` : ""].filter(Boolean).join("\n"), [], "high"),
+
+    voiceOfCustomer: (o) => call("voice", config.models.wonder, VOICE, VoiceSchema,
+      [`Brand: ${o.brand}. Product: ${o.brief.productName}. Market: ${o.brief.countries.join(", ")}.`, "Material:",
+        ...o.quotes.slice(0, 80).map((q, i) => `[${i}] (${q.source}) ${q.text.slice(0, 500)}`)].join("\n"), [], "high"),
+
+    async planConcepts(o) {
+      const schema = z.object({ concepts: z.array(DirectionSchema.extend({ format: z.enum(FORMATS).catch("classic"), copy: FormatCopySchema.catch(FormatCopySchema.parse({})), persona: z.string().max(80).catch("") })).min(1).max(24) });
+      const ctx = [`Brand: ${o.brand}`, `Product: ${o.brief.productName} (${o.brief.productUrl})`, o.brief.price && `Price: ${o.brief.price}`, o.brief.offer ? `Offer: ${o.brief.offer}` : "No offer.",
+        `Audience: ${o.brief.audience || "not stated"} · ${o.brief.countries.join(", ")}`, o.brief.notes && `Notes: ${o.brief.notes}`,
+        o.insights && `COMPETITOR INSIGHTS: ${JSON.stringify(o.insights)}`,
+        o.voice && `WHAT CUSTOMERS SAY: ${JSON.stringify({ summary: o.voice.summary, personas: o.voice.personas, phrases: o.voice.phrases })}\nREVIEWS OF OUR PRODUCT (the only quotes you may use in a testimonial; if none, don't use that format):\n${o.voice.quotes.slice(0, 20).map((q) => `- "${q.text.slice(0, 220)}" (${q.source})`).join("\n")}`,
+        o.memory && `WHAT HAS WORKED FOR THIS BRAND: ${JSON.stringify(o.memory)}`,
+        o.remix?.analysis && `COMPETITOR AD (${o.remix.pageName}): ${JSON.stringify(o.remix.analysis)}`, rulebookBlock(o.rulebook)].filter(Boolean).join("\n");
+      const out = await call(o.remix ? "remix" : "concepts", config.models.wonder, o.remix ? REMIX : CONCEPTS(o.count, o.formats), schema, ctx,
+        [...(o.remix?.image ? [o.remix.image] : []), ...o.product.slice(0, 2)], "high");
+      return out.concepts;
+    },
+
+    scoreConcept: (design, product, concept) => call("preflight", config.models.spark, SCORE, ConceptScoreSchema,
+      `Format: ${concept.format ?? "classic"}. Headline: "${concept.headline}". Persona: ${concept.persona ?? "general"}.\nImage 1 = REAL PRODUCT, Image 2 = THE AD.`, [product, design], "medium"),
+
+    learnMemory: (o) => call("memory", config.models.wonder, MEMORY, BrandMemorySchema,
+      [`Brand: ${o.brand}.`, "Past ads:", ...o.ads.map((a) => JSON.stringify({ name: a.name, impressions: a.impressions, ctr: +a.ctr.toFixed(2), cpc: +a.cpc.toFixed(2), spend: +a.spend.toFixed(2), purchases: a.purchases || undefined, cpa: a.cpa ? +a.cpa.toFixed(2) : undefined, roas: a.roas || undefined, headline: a.title, copy: a.body?.slice(0, 200), creative: a.analysis })),
+        o.learnings.length ? `Lessons from Keel campaigns:\n${o.learnings.slice(-15).map((l) => `- ${l}`).join("\n")}` : ""].join("\n"), [], "high"),
   };
 }
 
@@ -224,7 +299,8 @@ export function fakeStudioModels(): StudioModels {
       await o.onText("Starting with the category search, then the competitors' own sites.");
       const res = JSON.parse(await tool("search_ad_library")({ terms: "rain jacket" })) as { ads?: { id: string }[] };
       const named = o.text.split("\n").find((l) => l.startsWith("Competitors the brand named:")) ?? "";
-      for (const u of (named.match(/https?:\/\/[^\s,]+/g) ?? []).slice(0, 2)) await tool("read_website")({ url: u });
+      for (const u of (named.match(/https?:\/\/[^\s,]+/g) ?? []).slice(0, 2)) { await tool("read_website")({ url: u }); await tool("read_reviews")({ url: u }); }
+      await tool("search_reddit")({ query: "rain jacket commute" });
       for (const a of (res.ads ?? []).slice(0, 2)) await tool("look_at_ad")({ id: a.id });
       return "Competitors lead with mountains and discounts; nobody talks about the daily commute.";
     },
@@ -266,6 +342,30 @@ export function fakeStudioModels(): StudioModels {
         category: "Rainwear and outerwear", audience: { summary: "Urban commuters 22-40 who walk or take transit through the monsoon", ageMin: 22, ageMax: 40, countries: ["IN"] },
         heroProduct: 0, heroWhy: "The flagship product, featured first on the homepage, with the clearest photos.", competitors: ["Decathlon", "Wildcraft"], offer: "", goal: "Drive visits to the product page", notes: "Lead with the product; keep copy short.",
       };
+    },
+    async voiceOfCustomer(o) {
+      return { summary: `${o.quotes.length} customer comments read. Commuters complain about arriving soaked and about heavy, sweaty raincoats.`, phrases: ["arrived dry", "not sweaty", "fits in my bag"],
+        personas: [{ name: "The monsoon commuter", who: "Takes the train to work through the rains", pains: ["Arrives soaked", "Raincoats are sweaty"], desires: ["Look office-ready"], objections: ["Will it really keep me dry?"], quotes: o.quotes.slice(0, 2).map((q) => q.text) }] };
+    },
+    async planConcepts(o) {
+      const base = presets[0]!;
+      const quote = o.voice?.quotes[0]?.text;
+      const all: Direction[] = [
+        { ...base, title: "Commute notes", format: "notes", persona: "The monsoon commuter", copy: FormatCopySchema.parse({ lines: ["Seam-sealed, not 'water resistant'", "380 g, fits in a laptop bag", "Breathes on humid trains"] }) },
+        { ...base, title: "Us vs raincoats", format: "versus", headline: "Not your dad's raincoat", copy: FormatCopySchema.parse({ them: "Typical raincoat", rows: [{ label: "Weight", us: "380 g", them: "Heavy" }, { label: "Seams", us: "Taped", them: "Stitched" }, { label: "Breathes", us: "Yes", them: "Rarely" }] }) },
+        { ...base, title: "Arrived dry", format: quote ? "testimonial" : "tweet", copy: FormatCopySchema.parse({ quote: quote ?? "Rain at 9, meeting at 9:30. Still dry.", author: quote ? o.voice!.quotes[0]!.source : "" }) },
+        { ...base, title: "Forecast meme", format: "meme", scenePrompt: "A commuter under a bus stop in heavy rain", copy: FormatCopySchema.parse({ top: "Me: no rain today", bottom: "The monsoon:" }) },
+        { ...base, title: "POV commute", format: "ugc", copy: FormatCopySchema.parse({ sticker: "POV: you stopped carrying an umbrella" }) },
+        { ...base, title: "Soaked vs dry", format: "beforeafter", copy: FormatCopySchema.parse({ before: "Soaked", after: "Dry", scene2: "A soaked commuter on a platform" }) },
+      ];
+      return (o.remix ? [{ ...all[0]!, title: `Remix of ${o.remix.pageName}`, rationale: "Borrowed the list structure" }] : all).filter((c) => o.formats.includes(c.format as FormatKey) || o.remix).slice(0, o.count);
+    },
+    async scoreConcept(_d, _p, c) {
+      const n = (c.title.length * 7) % 30;
+      return { overall: 0.55 + n / 100, scrollStop: 0.6, clarity: 0.7, product: 0.85, text: 0.75, brand: 0.8, notes: "Make the headline bigger." };
+    },
+    async learnMemory(o) {
+      return { summary: `${o.ads.length} past ads read.`, winners: ["Close-up product shots with one clear benefit"], losers: ["Busy lifestyle scenes with long copy"], doMore: ["Lead with the commute"], avoid: ["Discount-first headlines"] };
     },
     async learn(o) {
       const ranked = [...o.perf.ads].filter((a) => a.impressions > 0).sort((a, b) => b.ctr - a.ctr);

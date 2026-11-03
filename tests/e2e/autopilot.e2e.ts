@@ -152,8 +152,8 @@ assert.ok(posts.some((x) => x.path === "as1" && x.params.daily_budget === "62500
 const newAd = posts.filter((x) => x.path.endsWith("/ads")).at(-1)!;
 assert.equal(newAd.params.status, "ACTIVE", "new variant runs because the campaign is live");
 const [p2] = await db.select().from(schema.studioProjects).where(eq(schema.studioProjects.id, ap.projectId!));
-assert.equal((p2!.directions as unknown[]).length, 4);
-assert.equal((p2!.launch as { ads: unknown[] }).ads.length, 4);
+assert.equal((p2!.directions as unknown[]).length, 6, "3 directions + 2 concepts + 1 new variant");
+assert.equal((p2!.launch as { ads: unknown[] }).ads.length, 6);
 console.log("✓ applied: paused the weak ad, raised the budget, added a new variant of the winner");
 assert.ok((await autopilot.due(new Date(Date.now() + 7 * 3_600_000))).includes(id), "due again after the interval");
 

@@ -1,4 +1,4 @@
-import type { Brief, CompetitorAd, DesignDoc, Direction, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile } from "@keel/core/studio";
+import type { BrandMemory, Brief, CompetitorAd, Concept, DesignDoc, Direction, FormatKey, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile, Voice } from "@keel/core/studio";
 export type Severity = "critical" | "high" | "medium" | "low";
 export type Role = "owner" | "reviewer" | "viewer";
 
@@ -127,16 +127,18 @@ export const ACTION_LABEL: Record<string, string> = {
 };
 
 // ── Studio ───────────────────────────────────────────────────────────────────
-export type { Brief, CompetitorAd, DesignDoc, Direction, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile };
+export type { BrandMemory, Brief, CompetitorAd, Concept, DesignDoc, Direction, FormatKey, Insights, Learning, Move, PerformanceSnapshot, ReelShot, SiteProfile, Voice };
+export interface ConceptBoard { status: "making" | "ready" | "failed"; items: Concept[]; error?: string; at: string }
+export interface MemoryInfo { brandId: string; summary: BrandMemory | null; ads: { adId: string; name: string; imageRef?: string; impressions: number; ctr: number; cpc: number; spend: number; purchases?: number; roas?: number; analysis?: { hook: string; format: string } }[]; learnings: { at: string; text: string; source: string }[]; updatedAt: string }
 export interface StudioStep { key: string; label: string; status: "waiting" | "running" | "done" | "failed" | "skipped"; detail?: string; ms?: number }
 export interface StudioLog { at: string; step: string; text: string; kind: "info" | "decision" | "warn" }
-export interface StudioResearch { searchTerms: string[]; competitors: string[]; source: string; note?: string; ads: CompetitorAd[]; insights: Insights }
+export interface StudioResearch { searchTerms: string[]; competitors: string[]; source: string; note?: string; ads: CompetitorAd[]; insights: Insights; voice?: Voice }
 export type StudioDirection = Direction & { sceneRef: string; sceneHistory?: string[]; productInScene?: boolean; frames?: (string | null)[]; ranking?: { space: string; scores: { index: number; score: number; notes: string }[] } };
 export interface StudioDesign { id: string; projectId: string; direction: number; size: "square" | "portrait" | "story"; doc: DesignDoc; renderRef: string | null; check: { pass: boolean; score: number; issues: string[] } | null; picked: boolean; updatedAt: string }
 export interface StudioProject {
   id: string; name: string; accountId: string; brandId: string; status: "drafting" | "ready" | "launching" | "launched" | "failed";
   brief: Brief; steps: StudioStep[]; directions: StudioDirection[] | null; error: string | null; createdAt: string; updatedAt: string;
-  research: StudioResearch | null; log: StudioLog[] | null;
+  research: StudioResearch | null; log: StudioLog[] | null; concepts: ConceptBoard | null;
   launch: { campaignId: string; adsetId: string; ads: { designId: string; direction: number; adId: string }[]; at: string } | null;
 }
 export interface StudioProjectDetail extends StudioProject { role: Role; designs: StudioDesign[] }
@@ -163,6 +165,11 @@ export const studio = {
   storyboard: (id: string, n: number) => request<{ frames: number }>(`/api/studio/projects/${id}/directions/${n}/storyboard`, { method: "POST" }),
   launch: (id: string) => request<NonNullable<StudioProject["launch"]>>(`/api/studio/projects/${id}/launch`, { method: "POST" }),
   downloadUrl: (designId: string) => `/api/studio/designs/${designId}/download`,
+  makeConcepts: (id: string, b: { count?: number; formats?: FormatKey[]; remixOf?: string } = {}) => request(`/api/studio/projects/${id}/concepts`, { method: "POST", body: JSON.stringify(b) }),
+  addConcepts: (id: string, ids: string[]) => request<{ added: { id: string; index: number }[] }>(`/api/studio/projects/${id}/concepts/add`, { method: "POST", body: JSON.stringify({ ids }) }),
+  memory: (accountId: string) => request<MemoryInfo | null>(`/api/studio/memory?accountId=${encodeURIComponent(accountId)}`),
+  memoryStatus: (accountId: string) => request<{ refreshing: boolean }>(`/api/studio/memory/status?accountId=${encodeURIComponent(accountId)}`),
+  refreshMemory: (accountId: string) => request(`/api/studio/memory/refresh`, { method: "POST", body: JSON.stringify({ accountId }) }),
 };
 export const adsManagerUrl = (accountId: string, campaignId?: string) =>
   `https://adsmanager.facebook.com/adsmanager/manage/${campaignId ? "adsets" : "campaigns"}?act=${accountId.replace("act_", "")}${campaignId ? `&selected_campaign_ids=${campaignId}` : ""}`;
@@ -192,7 +199,7 @@ export interface AutopilotDetail {
 export const autopilot = {
   list: () => request<AutopilotSummary[]>("/api/autopilot"),
   get: (id: string) => request<AutopilotDetail>(`/api/autopilot/${id}`),
-  start: (b: { accountId: string; url: string; dailyBudget: number; maxDailyBudget?: number }) => request<{ id: string }>("/api/autopilot", { method: "POST", body: JSON.stringify(b) }),
+  start: (b: { accountId: string; url: string; dailyBudget: number; maxDailyBudget?: number; objective?: "traffic" | "sales" }) => request<{ id: string }>("/api/autopilot", { method: "POST", body: JSON.stringify(b) }),
   launch: (id: string, live: boolean) => request(`/api/autopilot/${id}/launch`, { method: "POST", body: JSON.stringify({ live }) }),
   check: (id: string) => request(`/api/autopilot/${id}/check`, { method: "POST" }),
   decide: (id: string, moveId: string, approve: boolean) => request(`/api/autopilot/${id}/moves/${moveId}`, { method: "POST", body: JSON.stringify({ approve }) }),
